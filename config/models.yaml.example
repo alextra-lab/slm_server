@@ -1,0 +1,77 @@
+# Model configuration for SLM Server
+#
+# Copy this file to models.yaml and update the model_path values with your actual paths.
+# Example: cp config/models.yaml.example config/models.yaml
+#
+# Each model defines:
+# - id: Model identifier (used for routing requests)
+# - backend: Backend type (mlx, llamacpp, or lmstudio)
+# - port: Port number for this model's server instance
+# - model_type: Type of model (lm, multimodal, image-generation, image-edit, embeddings, whisper). Default: lm
+# - context_length: Maximum context length. Default: None (uses model's default)
+# - quantization: Quantization level
+# - max_concurrency: Maximum concurrent requests. Default: 1
+# - host: Host to run the server on. Default: 0.0.0.0
+# - default_timeout: Default timeout in seconds
+# - enable_auto_tool_choice: Enable automatic tool choice (lm/multimodal only). Default: false
+# - tool_call_parser: Tool call parser (qwen3, glm4_moe, qwen3_coder, qwen3_moe, qwen3_next, qwen3_vl, harmony, minimax_m2). Default: None
+# - reasoning_parser: Reasoning parser (qwen3, glm4_moe, qwen3_moe, qwen3_next, qwen3_vl, harmony, minimax_m2). Default: None
+# - config_name: Model config name (for image-generation/image-edit). Default: flux-schnell for image-generation, flux-kontext-dev for image-edit
+# - model_path: Path to model directory/file (required)
+# - enabled: Whether this model should be started (default: true)
+
+models:
+  router:
+    id: "liquid/lfm2.5-1.2b"
+    backend: "mlx"
+    port: 8500
+    context_length: 32768
+    quantization: "8bit"
+    max_concurrency: 4
+    default_timeout: 10
+    supports_function_calling: false  # Router doesn't need tool calling
+    model_path: "~/.cache/lm-studio/models/mlx-community/LFM2.5-1.2B-Instruct-8bit"  # Update this path
+
+  standard:
+    id: "qwen/qwen3-4b-2507"
+    backend: "mlx"
+    port: 8501
+    model_type: "lm"  # Type of model (lm, multimodal, image-generation, image-edit, embeddings, whisper)
+    context_length: 40960  # Optional: None uses model's default
+    quantization: "8bit"
+    max_concurrency: 2  # Default: 1
+    host: "0.0.0.0"  # Default: 0.0.0.0
+    default_timeout: 45
+    enable_auto_tool_choice: true  # Enable automatic tool choice (lm/multimodal only)
+    supports_function_calling: true  # Enable tool calling for the standard model
+    tool_call_parser: "qwen3"        # Use qwen3 parser for Qwen models
+    reasoning_parser: "qwen3"        # Optional: reasoning parser for Qwen models
+    model_path: "~/.cache/lm-studio/models/lmstudio-community/Qwen3-4b-Instruct-2507-MLX-8bit"  # Update this path
+
+  reasoning:
+    id: "qwen/qwen3-8b"
+    backend: "mlx"
+    port: 8502
+    model_type: "lm"  # Type of model (lm, multimodal, image-generation, image-edit, embeddings, whisper)
+    context_length: 65536  # Optional: None uses model's default
+    quantization: "8bit"
+    max_concurrency: 2  # Default: 1
+    host: "0.0.0.0"  # Default: 0.0.0.0
+    default_timeout: 60
+    enable_auto_tool_choice: true  # Enable automatic tool choice (lm/multimodal only)
+    supports_function_calling: true
+    tool_call_parser: "qwen3"        # Use qwen3 parser for Qwen models
+    reasoning_parser: "qwen3"        # Optional: reasoning parser for Qwen models
+    model_path: "~/.cache/lm-studio/models/lmstudio-community/Qwen3-8B-MLX-8bit"  # Update this path
+
+  coding:
+    id: "mistralai/devstral-small-2-2512"
+    backend: "mlx"  # GGUF files require llamacpp backend
+    port: 8503
+    context_length: 32768
+    quantization: "8bit"
+    max_concurrency: 2
+    default_timeout: 45
+    supports_function_calling: false
+    enabled: true
+    model_path: "~/.cache/lm-studio/models/lmstudio-community/Devstral-Small-2507-MLX-8bit"  # Update this path

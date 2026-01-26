@@ -1,0 +1,88 @@
+# Nginx configuration for SLM Server
+# 
+# Copy this file to nginx.conf and update the log paths with your actual project path.
+# Example: cp nginx.conf.example nginx.conf
+# Then edit nginx.conf and replace /path/to/slm_server with your actual project path.
+#
+# This config sets up nginx as a reverse proxy in front of the FastAPI routing service.
+# All requests to port 8000 are forwarded to the routing service on port 8001.
+#
+# Usage:
+#   sudo nginx -c /path/to/slm_server/nginx.conf -g "daemon off;"
+#   Or: sudo nginx -c /path/to/slm_server/nginx.conf (runs in background)
+
+events {
+    worker_connections 1024;
+}
+
+http {
+    # Basic settings
+    include       /opt/homebrew/etc/nginx/mime.types;
+    default_type  application/octet-stream;
+    
+    # Logging - UPDATE THESE PATHS to match your project directory
+    access_log    /path/to/slm_server/logs/nginx_access.log;
+    error_log     /path/to/slm_server/logs/nginx_error.log;
+    
+    # Performance
+    sendfile        on;
+    tcp_nopush      on;
+    tcp_nodelay     on;
+    keepalive_timeout  65;
+    types_hash_max_size 2048;
+    
+    # Gzip compression
+    gzip  on;
+    gzip_vary on;
+    gzip_min_length 1000;
+    gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript;
+    
+    # Upstream: FastAPI routing service
+    upstream routing_service {
+        server localhost:8001;
+    }
+    
+    server {
+        listen       8000;
+        server_name  localhost;
+        
+        # Increase timeouts for LLM requests (can be slow)
+        proxy_connect_timeout       300s;
+        proxy_send_timeout          300s;
+        proxy_read_timeout          300s;
+        send_timeout                300s;
+        
+        # Increase buffer sizes for large requests/responses
+        client_max_body_size        100M;
+        proxy_buffering             off;  # Disable buffering for streaming responses
+        
+        # Headers
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        
+        # Route all /v1/* requests to routing service
+        location /v1/ {
+            proxy_pass http://routing_service;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection "upgrade";
+            
+            # Streaming support
+            proxy_buffering off;
+            proxy_cache off;
+        }
+        
+        # Health check
+        location /health {
+            proxy_pass http://routing_service;
+        }
+        
+        # Root endpoint
+        location / {
+            return 200 '{"service": "slm-server", "version": "0.1.0", "endpoint": "/v1/chat/completions"}';
+            add_header Content-Type application/json;
+        }
+    }
+}
