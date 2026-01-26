@@ -40,28 +40,27 @@ models:
 - Need to manage multiple ports
 - Agent must know which port for which role
 
-### Option 2: Single Port with Model Selection (Requires Nginx/Reverse Proxy)
+### Option 2: Single Port with Model Selection (Current Implementation)
 
-Use one port (e.g., 1234) with a reverse proxy that routes based on model ID:
+The routing service provides a single endpoint that routes based on model ID:
 
 ```
-Client Request → Nginx (port 1234) → Route by model ID → Backend Server
+Client Request → Routing Service (port 8000) → Route by model ID → Backend Server
 ```
 
 **Pros:**
-- Single endpoint for agent
+- Single endpoint for clients
 - Cleaner configuration
-- Can load balance between instances
+- Automatic routing based on model ID in request body
 
 **Cons:**
-- Requires nginx or similar reverse proxy
-- More complex setup
-- Still need separate backend servers (just hidden behind proxy)
+- All requests go through the routing service
+- Backend servers still need separate ports
 
 ## For Benchmarking/A/B Testing
 
 **You typically want separate ports** to:
-- Run multiple backends in parallel (MLX on 8500, llama.cpp on 8501, LMStudio on 8502)
+- Run multiple backends in parallel (MLX on 8500, llama.cpp on 8501)
 - Compare performance side-by-side
 - Test different configurations simultaneously
 
@@ -72,16 +71,11 @@ Client Request → Nginx (port 1234) → Route by model ID → Backend Server
 - Configure `models.yaml` with per-model endpoints
 - No nginx needed for simple A/B testing
 
-**For production: Consider nginx** if you want:
-- Single endpoint (`http://localhost:8000/v1`)
-- Automatic routing based on model ID in request
-- Load balancing between multiple instances
-- Request caching
-
-The current setup uses:
-- Port 8000: Nginx (reverse proxy, optional)
-- Port 8001: Routing service (FastAPI)
+**Current setup:**
+- Port 8000: Routing service (FastAPI) - single endpoint for all requests
 - Ports 8500-8503: Backend model servers (configurable per model)
+
+The routing service automatically routes requests to the correct backend based on the model ID in the request body.
 
 ## Example: Starting Multiple Models for Benchmarking
 
@@ -94,8 +88,8 @@ uv run python -m slm_server.benchmark_models start --backend mlx --model router 
 # Terminal 2: Router with llama.cpp (same model, different backend)
 uv run python -m slm_server.benchmark_models start --backend llamacpp --model router --port 8501
 
-# Terminal 3: Router with LMStudio
-uv run python -m slm_server.benchmark_models start --backend lmstudio --model router --port 8502
+# Terminal 3: Another model with different backend
+uv run python -m slm_server.benchmark_models start --backend llamacpp --model standard --port 8502
 ```
 
 Or use the standard startup process which starts all configured models:
@@ -107,15 +101,4 @@ uv run python -m slm_server backends
 
 Then configure `models.yaml` to point to the appropriate port for testing.
 
-## Nginx Setup (Optional, for Production)
-
-If you want a single endpoint, you'd configure nginx to route by model ID:
-
-```nginx
-location /v1/chat/completions {
-    # Route based on model parameter in request body
-    # This requires custom nginx logic or Lua scripting
-}
-```
-
-But for benchmarking, **separate ports are simpler and more flexible**.
+The routing service handles all model selection automatically - you don't need to configure separate endpoints for each model. Simply send requests to `http://localhost:8000/v1/chat/completions` with the model ID in the request body.

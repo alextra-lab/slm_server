@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "slm-server"
 version = "0.1.0"
-description = "Unified LLM server with nginx reverse proxy and model-based routing"
+description = "Unified LLM server with intelligent model-based routing. Optimized for Apple Silicon (M1/M2/M3) with MLX backend support."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }

@@ -1,27 +1,33 @@
 # SLM Server
 
-Unified LLM server with nginx reverse proxy and intelligent routing based on model ID.
+Unified LLM server with intelligent routing based on model ID. Optimized for Apple Silicon (M1/M2/M3) with MLX backend support.
 
 ## Architecture
 
 ```
 Client Request (port 8000)
     ↓
-Nginx (reverse proxy)
-    ↓
-Routing Service (FastAPI, port 8001)
+Routing Service (FastAPI, port 8000)
     ↓ (reads model ID from request body)
-Backend Model Servers (MLX/llama.cpp/LMStudio on ports 1234, 8002, 8003, ...)
+Backend Model Servers (MLX/llama.cpp on ports 8500, 8501, 8502, ...)
 ```
 
 ## Features
 
+- **Apple Silicon optimized**: MLX backend leverages Apple's Metal Performance Shaders for fast inference on M1/M2/M3 chips
 - **Single endpoint**: All requests go to `http://localhost:8000/v1`
 - **Model-based routing**: Extracts model ID from request body and routes to correct backend
-- **Multi-backend support**: MLX, llama.cpp, and LMStudio
+- **Multi-backend support**: MLX (Apple Silicon) and llama.cpp (cross-platform)
 - **Port per model**: Each model runs on its own port (configured in `config/models.yaml`)
-- **Nginx integration**: Optional nginx for SSL termination, load balancing, and static file serving
 - **OpenAI-compatible**: Full compatibility with OpenAI API format
+
+## Requirements
+
+- **macOS with Apple Silicon** (M1, M2, M3, or later) - Recommended for MLX backend
+- Python 3.12+
+- [uv](https://github.com/astral-sh/uv) package manager
+
+> **Note:** While llama.cpp backend works cross-platform, the MLX backend (recommended) requires Apple Silicon for optimal performance.
 
 ## Quick Start
 
@@ -36,17 +42,14 @@ uv sync
 ```bash
 uv sync --extra mlx        # For MLX backend
 uv sync --extra llamacpp   # For llama.cpp backend
-# LMStudio must be installed separately
 ```
 
 3. **Set up configuration files**:
 ```bash
-# Copy configuration templates
+# Copy configuration template
 cp config/models.yaml.example config/models.yaml
-cp nginx.conf.example nginx.conf
 
 # Edit config/models.yaml with your model paths
-# Edit nginx.conf with your project path (if using nginx)
 ```
 
 4. **Configure models** (edit `config/models.yaml`):
@@ -54,15 +57,15 @@ cp nginx.conf.example nginx.conf
 models:
   router:
     id: "qwen/qwen3-1.7b"
-    backend: "mlx"  # or "llamacpp" or "lmstudio"
+    backend: "mlx"  # or "llamacpp"
     port: 8500
     context_length: 32768
     quantization: "8bit"
     max_concurrency: 4
     default_timeout: 10
     supports_function_calling: false
-    model_path: "~/.cache/lm-studio/models/mlx-community/LFM2.5-1.2B-Instruct-8bit"
-    # Or use Hugging Face model ID: "mlx-community/LFM2.5-1.2B-Instruct-8bit"
+    model_path: "mlx-community/LFM2.5-1.2B-Instruct-8bit"  # Hugging Face model ID (auto-downloads)
+    # Or use local path: "~/.cache/huggingface/hub/models--mlx-community--LFM2.5-1.2B-Instruct-8bit"
 ```
 
 5. **Start all services** (recommended):
@@ -80,9 +83,6 @@ uv run python -m slm_server backends
 
 # Terminal 2: Start routing service
 uv run python -m slm_server router
-
-# Terminal 3: Start nginx (optional, requires sudo)
-sudo nginx -c $(pwd)/nginx.conf
 ```
 
 ## Configuration
@@ -91,7 +91,7 @@ See `config/models.yaml.example` for a template. Copy it to `config/models.yaml`
 
 Each model needs:
 - `id`: Model identifier (used for routing - must match what's in request body)
-- `backend`: Backend type (`mlx`, `llamacpp`, or `lmstudio`)
+- `backend`: Backend type (`mlx` or `llamacpp`)
 - `port`: Port number for this model's server (must be unique per model)
 - `context_length`, `quantization`, `max_concurrency`, `default_timeout`: Model-specific settings
 - `model_path`: Path to model file or Hugging Face model ID
@@ -100,22 +100,24 @@ Each model needs:
 
 You can specify models in two ways:
 
-1. **Local file path**: Full path to model directory or file
-   ```yaml
-   model_path: "~/.cache/lm-studio/models/lmstudio-community/Qwen3-4b-Instruct-2507-MLX-8bit"
-   ```
-
-2. **Hugging Face model ID**: Automatically downloads on first use
+1. **Hugging Face model ID** (recommended): Automatically downloads on first use
    ```yaml
    model_path: "mlx-community/LFM2.5-1.2B-Instruct-8bit"
    ```
 
+2. **Local file path**: Full path to model directory or file
+   ```yaml
+   model_path: "~/.cache/huggingface/hub/models--mlx-community--LFM2.5-1.2B-Instruct-8bit"
+   # Or any local directory containing the model
+   ```
+
 ### Model Discovery
 
-The server automatically searches for models in:
-- `~/.cache/lm-studio/models/` (LMStudio cache)
-- Custom paths specified via `model_path` in config
-- Hugging Face cache (`~/.cache/huggingface/hub/`) when using model IDs
+Models can be specified in two ways:
+
+1. **Hugging Face model ID**: The server automatically downloads models from Hugging Face on first use. Models are cached in `~/.cache/huggingface/hub/`.
+
+2. **Local file path**: Point directly to a model directory or file on your system. You can download models manually from Hugging Face or use any local directory.
 
 ## API
 
@@ -165,12 +167,11 @@ Health check endpoint for the router itself.
 ## How It Works
 
 1. **Client sends request** to `http://localhost:8000/v1/chat/completions` with model ID in body
-2. **Nginx** (port 8000) forwards to routing service (port 8001)
-3. **Routing service** extracts `model` field from JSON body
-4. **Router** looks up model in `config/models.yaml` to find backend and port
-5. **Router** forwards request to correct backend server (e.g., `http://localhost:8500/v1/chat/completions`)
-6. **Backend** processes request and returns response
-7. **Router** forwards response back to client
+2. **Routing service** (port 8000) extracts `model` field from JSON body
+3. **Router** looks up model in `config/models.yaml` to find backend and port
+4. **Router** forwards request to correct backend server (e.g., `http://localhost:8500/v1/chat/completions`)
+5. **Backend** processes request and returns response
+6. **Router** forwards response back to client
 
 ## Port Management
 
@@ -181,39 +182,38 @@ Each model **must** have its own unique port. The router uses the port from `con
 - `reasoning` model → port 8502 (MLX)
 - `coding` model → port 8503 (MLX)
 
-The routing service runs on port 8001, and nginx (if used) runs on port 8000.
+The routing service runs on port 8000.
 
 ## Backend Requirements
 
-### MLX
+### MLX (Recommended for Apple Silicon)
 - Install: `uv sync --extra mlx`
 - Requires: `mlx-openai-server` command
-- Auto-discovers models from LMStudio cache
+- Supports Hugging Face model IDs (auto-downloads) or local model paths
+- **Optimized for Apple Silicon** - Uses Metal Performance Shaders for GPU acceleration
+- Best performance on M1/M2/M3 Macs
 
 ### llama.cpp
 - Install: `uv sync --extra llamacpp`
 - Requires: `llama-cpp-python[server]` package
-- Auto-discovers `.gguf` files from LMStudio cache
-
-### LMStudio
-- Must be installed separately (GUI application)
-- Models must be started manually in LMStudio GUI
-- Configure port in LMStudio to match `config/models.yaml`
+- Supports Hugging Face model IDs (auto-downloads) or local `.gguf` files
+- Cross-platform support
 
 ## Troubleshooting
 
 ### Check Backend Health
 First, check if all backends are running:
 ```bash
-curl http://localhost:8001/v1/backends/health | jq
+curl http://localhost:8000/v1/backends/health | jq
 ```
 
 This will show the status of each backend server and help identify issues.
 
 ### Model not found
 - Check that model ID in request matches `id` field in `config/models.yaml`
-- Verify model file exists in LMStudio cache or set `model_path` explicitly
+- Verify model file exists at the specified path, or use a Hugging Face model ID for auto-download
 - Check config validation warnings on startup
+- For Hugging Face models, ensure you have internet access for the first download
 
 ### Port already in use
 - Each model needs a unique port
@@ -226,7 +226,7 @@ This will show the status of each backend server and help identify issues.
 - Verify backend dependencies installed: `uv sync --extra mlx` or `uv sync --extra llamacpp`
 - Check logs for error messages
 - Ensure model paths are correct and files exist
-- For LMStudio, ensure it's running and configured with correct port
+- For Hugging Face models, ensure you have internet access and sufficient disk space
 
 ### Connection refused / Backend unreachable
 - Backend server may not be running

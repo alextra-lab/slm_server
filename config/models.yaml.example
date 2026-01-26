@@ -5,7 +5,7 @@
 #
 # Each model defines:
 # - id: Model identifier (used for routing requests)
-# - backend: Backend type (mlx, llamacpp, or lmstudio)
+# - backend: Backend type (mlx or llamacpp)
 # - port: Port number for this model's server instance
 # - model_type: Type of model (lm, multimodal, image-generation, image-edit, embeddings, whisper). Default: lm
 # - context_length: Maximum context length. Default: None (uses model's default)
@@ -17,7 +17,8 @@
 # - tool_call_parser: Tool call parser (qwen3, glm4_moe, qwen3_coder, qwen3_moe, qwen3_next, qwen3_vl, harmony, minimax_m2). Default: None
 # - reasoning_parser: Reasoning parser (qwen3, glm4_moe, qwen3_moe, qwen3_next, qwen3_vl, harmony, minimax_m2). Default: None
 # - config_name: Model config name (for image-generation/image-edit). Default: flux-schnell for image-generation, flux-kontext-dev for image-edit
-# - model_path: Path to model directory/file (required)
+# - model_path: Hugging Face model ID (e.g., "mlx-community/LFM2.5-1.2B-Instruct-8bit") 
+#              or local path to model directory/file (required)
 # - enabled: Whether this model should be started (default: true)
 
 models:
@@ -30,7 +31,8 @@ models:
     max_concurrency: 4
     default_timeout: 10
     supports_function_calling: false  # Router doesn't need tool calling
-    model_path: "~/.cache/lm-studio/models/mlx-community/LFM2.5-1.2B-Instruct-8bit"  # Update this path
+    model_path: "mlx-community/LFM2.5-1.2B-Instruct-8bit"  # Hugging Face model ID (auto-downloads)
+    # Or use local path: "~/.cache/huggingface/hub/models--mlx-community--LFM2.5-1.2B-Instruct-8bit"
 
   standard:
     id: "qwen/qwen3-4b-2507"
@@ -46,7 +48,8 @@ models:
     supports_function_calling: true  # Enable tool calling for the standard model
     tool_call_parser: "qwen3"        # Use qwen3 parser for Qwen models
     reasoning_parser: "qwen3"        # Optional: reasoning parser for Qwen models
-    model_path: "~/.cache/lm-studio/models/lmstudio-community/Qwen3-4b-Instruct-2507-MLX-8bit"  # Update this path
+    model_path: "mlx-community/Qwen3-4b-Instruct-2507-MLX-8bit"  # Hugging Face model ID (auto-downloads)
+    # Or use local path: "~/.cache/huggingface/hub/models--mlx-community--Qwen3-4b-Instruct-2507-MLX-8bit"
 
   reasoning:
     id: "qwen/qwen3-8b"
@@ -62,7 +65,8 @@ models:
     supports_function_calling: true
     tool_call_parser: "qwen3"        # Use qwen3 parser for Qwen models
     reasoning_parser: "qwen3"        # Optional: reasoning parser for Qwen models
-    model_path: "~/.cache/lm-studio/models/lmstudio-community/Qwen3-8B-MLX-8bit"  # Update this path
+    model_path: "mlx-community/Qwen3-8B-MLX-8bit"  # Hugging Face model ID (auto-downloads)
+    # Or use local path: "~/.cache/huggingface/hub/models--mlx-community--Qwen3-8B-MLX-8bit"
 
   coding:
     id: "mistralai/devstral-small-2-2512"
@@ -74,4 +78,5 @@ models:
     default_timeout: 45
     supports_function_calling: false
     enabled: true
-    model_path: "~/.cache/lm-studio/models/lmstudio-community/Devstral-Small-2507-MLX-8bit"  # Update this path
+    model_path: "mistralai/Devstral-Small-2507-MLX-8bit"  # Hugging Face model ID (auto-downloads)
+    # Or use local path: "~/.cache/huggingface/hub/models--mistralai--Devstral-Small-2507-MLX-8bit"
