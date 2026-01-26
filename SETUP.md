@@ -103,7 +103,7 @@ The easiest way is to use Hugging Face model IDs - models are automatically down
    model_path: "~/.cache/huggingface/hub/models--mlx-community--LFM2.5-1.2B-Instruct-8bit"
    ```
 
-**Note:** You can also use tools like LM Studio to download models visually, then point to those directories. The server works with any local model directory.
+**Note:** The server works with any local model directory. You can download models from Hugging Face or use any other method to obtain model files.
 
 ### 6. Start the Server
 
@@ -148,11 +148,11 @@ curl http://localhost:8000/v1/models | jq
 
 You can customize behavior with environment variables:
 
-- `LMSTUDIO_CACHE`: Override default model cache path for benchmark tool (default: `~/.cache/lm-studio/models`)
+- `MODEL_CACHE`: Override default model cache path for benchmark tool (default: `~/.cache/huggingface/hub`)
 
 Example:
 ```bash
-export LMSTUDIO_CACHE="/custom/path/to/models"
+export MODEL_CACHE="/custom/path/to/models"
 uv run python -m slm_server.benchmark_models check --backend mlx
 ```
 

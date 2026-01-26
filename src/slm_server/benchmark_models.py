@@ -4,7 +4,6 @@
 This script reads models.yaml and can start models using:
 - MLX (Apple Silicon optimized) - supports concurrency
 - llama.cpp (via llama-cpp-python server) - supports concurrency
-- LMStudio (using model cache) - concurrency managed internally
 
 **Backend Dependencies**: Backend servers are optional and can be installed via:
 - `uv sync --extra mlx` (for MLX backend)
@@ -21,7 +20,7 @@ integration with any OpenAI-compatible client (including httpx-based clients).
 Performance parameters configured:
 - Context length: Set from models.yaml
 - Quantization: Used for GPU layer optimization (llama.cpp)
-- Max concurrency: Set for MLX and llama.cpp (LMStudio manages internally)
+- Max concurrency: Set for MLX and llama.cpp
 - GPU layers: Optimized for Apple Silicon based on quantization
 
 Usage:
@@ -34,24 +33,21 @@ Usage:
 """
 
 import os
-import re
-import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Annotated
 
 import structlog
 import typer
 from rich.console import Console
 from rich.table import Table
 
-from slm_server.config import ModelConfig, ModelDefinition, load_model_config
+from slm_server.config import ModelDefinition, load_model_config
 from slm_server.start_backends import (
     BackendType,
     build_llamacpp_command,
     build_mlx_command,
-    find_command_in_venv,
     find_model_path,
 )
 
@@ -68,40 +64,10 @@ app = typer.Typer(help="Benchmark models using different backends")
 console = Console()
 log = structlog.get_logger(__name__)
 
-# LMStudio model cache path - can be overridden with LMSTUDIO_CACHE environment variable
-LMSTUDIO_CACHE = Path(
-    os.getenv("LMSTUDIO_CACHE", str(Path.home() / ".cache" / "lm-studio" / "models"))
+# Model cache path - can be overridden with MODEL_CACHE environment variable
+MODEL_CACHE = Path(
+    os.getenv("MODEL_CACHE", str(Path.home() / ".cache" / "huggingface" / "hub"))
 )
-
-
-def build_lmstudio_command(model_path: Path, port: int) -> list[str] | None:
-    """Build command to start LMStudio server.
-
-    Note: LMStudio typically runs as a GUI app, but can be started via CLI.
-    This assumes LMStudio CLI is available or provides instructions.
-
-    Args:
-        model_path: Path to model in LMStudio cache
-        port: Server port
-
-    Returns:
-        Command list for subprocess or None if not available.
-    """
-    # LMStudio may need to be started via GUI or CLI
-    # Check if lmstudio CLI is available
-    lmstudio_cli = Path("/Applications/LM Studio.app/Contents/MacOS/LM Studio")
-    if lmstudio_cli.exists():
-        return [
-            str(lmstudio_cli),
-            "--server",
-            "--port",
-            str(port),
-            "--model",
-            str(model_path),
-        ]
-    # Alternative: use LMStudio's API if available
-    # For now, return None and provide instructions
-    return None
 
 
 def start_model_server(
@@ -117,7 +83,7 @@ def start_model_server(
     - Endpoints: /v1/chat/completions, /v1/completions, /v1/embeddings
 
     Args:
-        backend: Backend type (mlx, llamacpp, lmstudio)
+        backend: Backend type (mlx, llamacpp)
         model_path: Path to model file or directory
         port: Server port
         model_config: Model configuration
@@ -126,41 +92,38 @@ def start_model_server(
         Subprocess.Popen object if started successfully, None otherwise.
     """
     cmd: list[str] | None = None
-    if backend == "mlx":
-        cmd = build_mlx_command(
-            model_path=model_path,
-            port=port,
-            context_length=model_config.context_length,
-            max_concurrency=model_config.max_concurrency,
-            model_type=getattr(model_config, "model_type", "lm"),
-            host=getattr(model_config, "host", "0.0.0.0"),
-            enable_auto_tool_choice=getattr(model_config, "enable_auto_tool_choice", False),
-            tool_call_parser=getattr(model_config, "tool_call_parser", None),
-            reasoning_parser=getattr(model_config, "reasoning_parser", None),
-            config_name=getattr(model_config, "config_name", None),
-        )
-    elif backend == "llamacpp":
-        cmd = build_llamacpp_command(
-            model_path,
-            port,
-            model_config.context_length,
-            model_config.quantization,
-            model_config.max_concurrency,
-        )
-    elif backend == "lmstudio":
-        cmd = build_lmstudio_command(model_path, port)
-        if cmd is None:
-            console.print(
-                "[yellow]LMStudio CLI not found. Please start LMStudio manually:[/yellow]"
+    try:
+        if backend == "mlx":
+            cmd = build_mlx_command(
+                model_path=model_path,
+                port=port,
+                context_length=model_config.context_length,
+                max_concurrency=model_config.max_concurrency,
+                model_type=getattr(model_config, "model_type", "lm"),
+                host=getattr(model_config, "host", "0.0.0.0"),
+                enable_auto_tool_choice=getattr(model_config, "enable_auto_tool_choice", False),
+                tool_call_parser=getattr(model_config, "tool_call_parser", None),
+                reasoning_parser=getattr(model_config, "reasoning_parser", None),
+                config_name=getattr(model_config, "config_name", None),
             )
-            console.print("  1. Open LM Studio")
-            console.print(f"  2. Load model: {model_path}")
-            console.print(f"  3. Start server on port {port}")
-            console.print(f"  4. Ensure server exposes: http://localhost:{port}/v1")
-            return None
+        elif backend == "llamacpp":
+            cmd = build_llamacpp_command(
+                model_path,
+                port,
+                model_config.context_length,
+                model_config.quantization,
+                model_config.max_concurrency,
+            )
+        else:
+            raise ValueError(f"Unknown backend: {backend}")
+    except ValueError as e:
+        console.print(f"[red]Invalid configuration: {e}[/red]")
+        log.error("invalid_config_parameters", backend=backend, error=str(e))
+        return None
 
     # At this point, cmd is guaranteed to be list[str] (not None)
     # because all branches either set cmd or return early
+    
     console.print(f"[green]Starting {backend} server with OpenAI-compatible API...[/green]")
     console.print(f"  Command: {' '.join(cmd)}")
     console.print(f"  Base URL: http://localhost:{port}/v1")
@@ -170,8 +133,6 @@ def start_model_server(
     console.print(f"  Quantization: {model_config.quantization}")
     if backend in ["mlx", "llamacpp"]:
         console.print(f"  Max Concurrency: {model_config.max_concurrency}")
-    elif backend == "lmstudio":
-        console.print("  Max Concurrency: N/A (LMStudio manages concurrency internally)")
 
     try:
         process = subprocess.Popen(
@@ -240,7 +201,7 @@ def list_models(
 @app.command()
 def start(
     backend: Annotated[
-        BackendType, typer.Option("--backend", "-b", help="Backend: mlx, llamacpp, or lmstudio")
+        BackendType, typer.Option("--backend", "-b", help="Backend: mlx or llamacpp")
     ],
     model: Annotated[
         str, typer.Option("--model", "-m", help="Model role (e.g., router, reasoning)")
@@ -286,7 +247,7 @@ def start(
         if model_file:
             model_path: Path = model_file
         else:
-            found_path = find_model_path(model_def.id, backend, LMSTUDIO_CACHE)
+            found_path = find_model_path(model_def.id, backend, MODEL_CACHE)
             if found_path is None:
                 console.print(
                     f"[red]Model file not found for {model_def.id} with backend {backend}[/red]"
@@ -328,7 +289,7 @@ def start(
 @app.command()
 def check(
     backend: Annotated[
-        BackendType, typer.Option("--backend", "-b", help="Backend: mlx, llamacpp, or lmstudio")
+        BackendType, typer.Option("--backend", "-b", help="Backend: mlx or llamacpp")
     ],
     config_path: Annotated[
         Path | None,
@@ -346,7 +307,7 @@ def check(
         table.add_column("Path", style="blue")
 
         for role, model_def in config.models.items():
-            model_path = find_model_path(model_def.id, backend, LMSTUDIO_CACHE)
+            model_path = find_model_path(model_def.id, backend, MODEL_CACHE)
             if model_path:
                 table.add_row(role, model_def.id, "[green]✓ Found[/green]", str(model_path))
             else:

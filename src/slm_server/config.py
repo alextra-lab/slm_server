@@ -10,7 +10,7 @@ class ModelDefinition(BaseModel):
     """Configuration for a single model server instance."""
 
     id: str = Field(..., description="Model identifier (used for routing)")
-    backend: Literal["mlx", "llamacpp", "lmstudio"] = Field(..., description="Backend type")
+    backend: Literal["mlx", "llamacpp"] = Field(..., description="Backend type")
     port: int = Field(..., ge=1024, le=65535, description="Port number for this model server")
     context_length: int | None = Field(
         None, ge=1, description="Maximum context length. Default: None (uses model's default context length)"

@@ -61,7 +61,7 @@ for role, model in data.get('models', {}).items():
     backend = model.get('backend', '')
     enabled = model.get('enabled', True)  # Default to True if not specified
     port = model.get('port')
-    if port and backend != 'lmstudio' and enabled:  # Skip lmstudio and disabled models
+    if port and enabled:  # Skip disabled models
         ports.append(str(port))
 
 print(' '.join(ports))

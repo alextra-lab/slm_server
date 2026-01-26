@@ -26,9 +26,6 @@ echo "Test 3: Check llama.cpp availability"
 uv run python -m slm_server.benchmark_models check --backend llamacpp 2>&1 | head -20
 echo ""
 
-echo "Test 4: Check LMStudio availability"
-uv run python -m slm_server.benchmark_models check --backend lmstudio 2>&1 | head -20
-echo ""
 
 # Test 5: Test start command building (will fail without models, but tests error handling)
 echo "Test 5: Test start command error handling (MLX - router model)"
@@ -39,9 +36,6 @@ echo "Test 6: Test start command error handling (llama.cpp - router model)"
 timeout 5 uv run python -m slm_server.benchmark_models start --backend llamacpp --model router --port 8001 2>&1 || echo "Expected failure (no model found)"
 echo ""
 
-echo "Test 7: Test start command error handling (LMStudio - router model)"
-timeout 5 uv run python -m slm_server.benchmark_models start --backend lmstudio --model router --port 8002 2>&1 || echo "Expected failure (no model found or CLI unavailable)"
-echo ""
 
 echo "=== All tests completed ==="
 echo ""
