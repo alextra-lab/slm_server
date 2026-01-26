@@ -362,7 +362,7 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
         log.error("routing_error", error=str(e), error_type=type(e).__name__)
         return _build_error_response(
             status_code=500,
-            message=f"Internal routing error: {str(e)}",
+            message="Internal server error while routing request.",
         )
 
 
@@ -571,7 +571,7 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
         log.error("routing_error", error=str(e), error_type=type(e).__name__)
         return _build_error_response(
             status_code=500,
-            message=f"Internal routing error: {str(e)}",
+            message="Internal server error while routing request.",
         )
 
 
