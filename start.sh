@@ -20,9 +20,12 @@ if ! command -v uv &> /dev/null; then
 fi
 
 # Function to check if a port is listening
+# Prefer lsof on macOS (Darwin) for explicit LISTEN state; nc can be flaky with BSD netcat
 check_port() {
     local port=$1
-    if command -v nc &> /dev/null; then
+    if [ "$(uname -s)" = "Darwin" ] && command -v lsof &> /dev/null; then
+        lsof -i ":$port" -sTCP:LISTEN >/dev/null 2>&1
+    elif command -v nc &> /dev/null; then
         nc -z localhost "$port" 2>/dev/null
     elif command -v lsof &> /dev/null; then
         lsof -i ":$port" -sTCP:LISTEN >/dev/null 2>&1
@@ -110,13 +113,13 @@ print(' '.join(ports))
     return 1
 }
 
-# Start backend servers in background
+# Start backend servers in background (--extra mlx/llamacpp so mlx-openai-server etc. are available)
 echo "📦 Starting backend model servers..."
-uv run python -m slm_server backends &
+uv run --extra mlx --extra llamacpp python -m slm_server backends &
 BACKEND_PID=$!
 
-# Wait a bit for backends to start
-sleep 3
+# Wait for backend processes to spawn and for mlx-openai-server to load models and bind to ports
+sleep 10
 
 # Verify all backend servers are ready
 if ! verify_backend_ports; then
