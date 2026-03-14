@@ -259,6 +259,11 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
 
         # Use shared HTTP client with connection pooling
         client = request.app.state.http_client
+
+        # Inject chat_template_kwargs (e.g. enable_thinking for Unsloth Qwen3.5) so backend gets it per-request
+        body_forward = dict(body)
+        if getattr(model_def, "chat_template_kwargs", None) and "chat_template_kwargs" not in body_forward:
+            body_forward["chat_template_kwargs"] = model_def.chat_template_kwargs
         
         # Override timeout for this request based on model config
         timeout = httpx.Timeout(
@@ -270,7 +275,7 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
         
         response = await client.post(
             backend_url,
-            json=body,
+            json=body_forward,
             headers=filtered_headers,
             timeout=timeout
         )
@@ -475,6 +480,8 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
 
         # Convert request format
         chat_body = _convert_responses_to_chat(body)
+        if getattr(model_def, "chat_template_kwargs", None) and "chat_template_kwargs" not in chat_body:
+            chat_body["chat_template_kwargs"] = model_def.chat_template_kwargs
         fallback_url = _get_backend_url(model_def, "/v1/chat/completions")
 
         response = await client.post(

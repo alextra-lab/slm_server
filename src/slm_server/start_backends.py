@@ -1,6 +1,8 @@
 """Script to start backend model servers based on config/models.yaml."""
 
 import asyncio
+import json
+import os
 import re
 import shutil
 import subprocess
@@ -294,8 +296,14 @@ def build_mlx_command(
     if max_concurrency <= 0:
         raise ValueError(f"Invalid max_concurrency: {max_concurrency}. Must be positive")
     
+    mlx_cmd = find_command_in_venv("mlx-openai-server")
+    if mlx_cmd == "mlx-openai-server" or not Path(mlx_cmd).exists():
+        raise ValueError(
+            "mlx-openai-server not found. Install the MLX extra: uv sync --extra mlx"
+        )
+    
     cmd = [
-        find_command_in_venv("mlx-openai-server"),
+        mlx_cmd,
         "launch",
         "--model-path",
         str(model_path),
@@ -339,8 +347,62 @@ def build_mlx_command(
     return cmd
 
 
+def find_native_llama_server() -> str | None:
+    """Return path to native llama-server binary (e.g. from brew install llama.cpp), or None."""
+    path = shutil.which("llama-server")
+    return path
+
+
+def build_llama_native_command(
+    model_path: Path,
+    port: int,
+    context_length: int | None,
+    quantization: str,
+    max_concurrency: int,
+    chat_template_kwargs: dict | None,
+    model_alias: str | None,
+    llama_server_bin: str,
+) -> list[str]:
+    """Build command for native llama-server (e.g. from brew install llama.cpp).
+
+    Uses Unsloth-recommended flags and supports --chat-template-kwargs (qwen35, qwen35moe).
+    """
+    if not (1024 <= port <= 65535):
+        raise ValueError(f"Invalid port: {port}. Must be between 1024 and 65535")
+    if context_length is None:
+        context_length = 4096
+    elif context_length <= 0:
+        raise ValueError(f"Invalid context_length: {context_length}")
+    cmd = [
+        llama_server_bin,
+        "--model",
+        str(model_path),
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(port),
+        "--ctx-size",
+        str(context_length),
+        "--n-gpu-layers",
+        "999",
+        "--threads",
+        "-1",
+    ]
+    if model_alias:
+        cmd.extend(["--alias", model_alias])
+    if chat_template_kwargs:
+        cmd.extend(["--chat-template-kwargs", json.dumps(chat_template_kwargs)])
+    return cmd
+
+
 def build_llamacpp_command(
-    model_path: Path, port: int, context_length: int | None, quantization: str, max_concurrency: int
+    model_path: Path,
+    port: int,
+    context_length: int | None,
+    quantization: str,
+    max_concurrency: int,
+    chat_template_kwargs: dict | None = None,
+    model_alias: str | None = None,
 ) -> list[str]:
     """Build command to start llama.cpp server.
 
@@ -350,6 +412,8 @@ def build_llamacpp_command(
         context_length: Maximum context length. Defaults to 4096 if None.
         quantization: Quantization level (affects GPU layers).
         max_concurrency: Maximum concurrent requests.
+        chat_template_kwargs: Optional dict for --chat_template_kwargs (e.g. {"enable_thinking": true} for Qwen3.5).
+        model_alias: Model name advertised by the server (for Claude Code / Unsloth; e.g. unsloth/Qwen3.5-35B-A3B).
 
     Returns:
         Command list for subprocess.
@@ -378,8 +442,11 @@ def build_llamacpp_command(
     if max_concurrency <= 0:
         raise ValueError(f"Invalid max_concurrency: {max_concurrency}. Must be positive")
     
-    gpu_layers = 35 if quantization in ["8bit", "8-bit"] else 40
-    return [
+    # Unsloth guidance: offload all layers to GPU (999), use all CPU threads (-1)
+    n_gpu_layers = 999
+    # KV cache: q8_0 reduces VRAM; avoid f16 for Qwen3.5 (Unsloth docs). GGML_TYPE_Q8_0 = 8
+    type_q8_0 = 8
+    cmd = [
         sys.executable,
         "-m",
         "llama_cpp.server",
@@ -389,15 +456,24 @@ def build_llamacpp_command(
         "localhost",
         "--port",
         str(port),
-        "--ctx-size",
+        "--n_ctx",
         str(context_length),
-        "--n-gpu-layers",
-        str(gpu_layers),
-        "--threads",
-        "4",
-        "--n-parallel",
-        str(max_concurrency),
+        "--n_gpu_layers",
+        str(n_gpu_layers),
+        "--n_threads",
+        "-1",
+        # Unsloth-recommended: KV cache q8_0 (less VRAM, better than f16 for Qwen3.5)
+        "--type_k",
+        str(type_q8_0),
+        "--type_v",
+        str(type_q8_0),
+        "--flash_attn",
+        "true",
     ]
+    # Alias so Claude Code / clients can use the same model id as in config (per Unsloth docs)
+    if model_alias:
+        cmd.extend(["--model_alias", model_alias])
+    return cmd
 
 
 def start_model_server(model_def, config: ModelConfig) -> subprocess.Popen | None:
@@ -439,7 +515,8 @@ def start_model_server(model_def, config: ModelConfig) -> subprocess.Popen | Non
         model_path=model_path,
     )
 
-    # Build command based on backend
+    # Build command based on backend (llamacpp may use native binary or Python server)
+    used_native_llama_server = False
     try:
         if model_def.backend == "mlx":
             cmd = build_mlx_command(
@@ -464,13 +541,44 @@ def start_model_server(model_def, config: ModelConfig) -> subprocess.Popen | Non
                     message="llama.cpp backend requires local .gguf files, not Hugging Face model IDs"
                 )
                 return None
-            cmd = build_llamacpp_command(
-                Path(model_path),
-                model_def.port,
-                model_def.context_length,
-                model_def.quantization,
-                model_def.max_concurrency,
-            )
+            model_path_obj = Path(model_path)
+            # If path is a directory, resolve to first .gguf file (Unsloth GGUF in folder)
+            if model_path_obj.is_dir():
+                gguf_files = sorted(model_path_obj.glob("*.gguf"))
+                if not gguf_files:
+                    log.error(
+                        "no_gguf_in_directory",
+                        model_id=model_def.id,
+                        path=str(model_path_obj),
+                    )
+                    return None
+                model_path_obj = gguf_files[0]
+                log.info("resolved_gguf_from_directory", model_id=model_def.id, gguf=str(model_path_obj))
+            # Prefer native llama-server (e.g. brew install llama.cpp) for Qwen3.5 and full Unsloth support
+            native_bin = find_native_llama_server()
+            if native_bin:
+                used_native_llama_server = True
+                log.info("using_native_llama_server", path=native_bin, model_id=model_def.id)
+                cmd = build_llama_native_command(
+                    model_path_obj,
+                    model_def.port,
+                    model_def.context_length,
+                    model_def.quantization,
+                    model_def.max_concurrency,
+                    chat_template_kwargs=getattr(model_def, "chat_template_kwargs", None),
+                    model_alias=model_def.id,
+                    llama_server_bin=native_bin,
+                )
+            else:
+                cmd = build_llamacpp_command(
+                    model_path_obj,
+                    model_def.port,
+                    model_def.context_length,
+                    model_def.quantization,
+                    model_def.max_concurrency,
+                    chat_template_kwargs=getattr(model_def, "chat_template_kwargs", None),
+                    model_alias=model_def.id,
+                )
         else:
             log.error("unknown_backend", backend=model_def.backend, model_id=model_def.id)
             return None
@@ -478,14 +586,24 @@ def start_model_server(model_def, config: ModelConfig) -> subprocess.Popen | Non
         log.error("invalid_config_parameters", model_id=model_def.id, error=str(e))
         return None
 
-    # Start process
+    # Start process (capture stderr so we can log it on startup failure)
+    # For llamacpp Python server only: set env for enable_thinking. Native llama-server gets --chat-template-kwargs on CLI.
+    run_env = os.environ.copy()
+    if (
+        model_def.backend == "llamacpp"
+        and not used_native_llama_server
+        and getattr(model_def, "chat_template_kwargs", None)
+    ):
+        kw = json.dumps(model_def.chat_template_kwargs)
+        run_env["LLAMA_CHAT_TEMPLATE_KWARGS"] = kw
+        run_env["LLAMA_ARG_CHAT_TEMPLATE_KWARGS"] = kw
     try:
-        # Redirect stdout/stderr to devnull to avoid blocking on pipe buffers
-        # For long-running servers, we don't need to capture output
         process = subprocess.Popen(
             cmd,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=run_env,
         )
         
         # Give the process a moment to fail fast if there are startup errors
@@ -493,12 +611,19 @@ def start_model_server(model_def, config: ModelConfig) -> subprocess.Popen | Non
         
         # Check if process is still running
         if process.poll() is not None:
-            # Process exited immediately - startup failure
+            # Process exited immediately - startup failure; log stderr for debugging
+            stderr_out = ""
+            if process.stderr:
+                try:
+                    stderr_out = (process.stderr.read() or "").strip()
+                except Exception:
+                    pass
             log.error(
                 "server_exited_immediately",
                 model_id=model_def.id,
                 port=model_def.port,
                 return_code=process.returncode,
+                stderr=stderr_out or None,
             )
             return None
         

@@ -30,6 +30,30 @@ uv sync --extra mlx        # For MLX backend (Apple Silicon optimized)
 uv sync --extra llamacpp   # For llama.cpp backend
 ```
 
+**Qwen3.5 / Unsloth GGUF (llama.cpp):** The server **prefers the native `llama-server` binary** when it’s on your PATH (e.g. from `brew install llama.cpp`). If you have it installed, the server will use it automatically and you get full Qwen3.5 support and `--chat-template-kwargs` without building anything else.
+
+If you don’t use the native binary, the PyPI build of `llama-cpp-python` may ship an older llama.cpp that does not support the `qwen35` / `qwen35moe` architectures. If you see:
+
+```text
+unknown model architecture: 'qwen35'
+unknown model architecture: 'qwen35moe'
+```
+
+either install the native server (`brew install llama.cpp`) so the server uses it, or install `llama-cpp-python` from source so it builds against the latest llama.cpp. From the project root, in the same env you use for the server:
+
+```bash
+# Apple Silicon (Metal); use -DGGML_CUDA=on for NVIDIA
+CMAKE_ARGS="-DGGML_METAL=on" uv pip install "llama-cpp-python[server] @ git+https://github.com/abetlen/llama-cpp-python.git@main" --no-cache-dir --reinstall
+```
+
+Or with pip:
+
+```bash
+CMAKE_ARGS="-DGGML_METAL=on" pip install "llama-cpp-python[server] @ git+https://github.com/abetlen/llama-cpp-python.git@main" --no-cache-dir --force-reinstall
+```
+
+Then run `uv sync --extra llamacpp` again so the rest of the project stays in sync. After that, the Qwen3.5/Unsloth GGUF models should load.
+
 ### 3. Set Up Configuration Files
 
 The project includes template files that you need to copy and customize:
@@ -178,6 +202,8 @@ uv run python -m slm_server.benchmark_models check --backend mlx
 3. Ensure each model has a unique port
 
 ### Backend Not Starting
+
+**"unknown model architecture: 'qwen35' or 'qwen35moe'"** — Use the native `llama-server` binary (e.g. `brew install llama.cpp`) so the server picks it up automatically, or install `llama-cpp-python` from source as in the **Qwen3.5 / Unsloth GGUF** step under "Install Dependencies" above.
 
 1. Check backend health:
    ```bash

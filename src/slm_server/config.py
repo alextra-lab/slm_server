@@ -41,6 +41,12 @@ class ModelDefinition(BaseModel):
     supports_function_calling: bool = Field(
         False, description="Whether model supports native function calling via mlx-openai-server"
     )
+    # For llamacpp: Unsloth Qwen3.5 thinking/reasoning. E.g. {"enable_thinking": true} for 35B-A3B, false/default for 9B.
+    # See https://unsloth.ai/docs/models/qwen3.5#how-to-enable-or-disable-reasoning-and-thinking
+    chat_template_kwargs: dict | None = Field(
+        None,
+        description="Optional chat template kwargs for llama.cpp (e.g. enable_thinking for Qwen3.5). Only used when backend is llamacpp.",
+    )
     model_path: str | None = Field(None, description="Optional path to model file (auto-discovered if not set)")
     enabled: bool = Field(True, description="Whether this model server should be started")
 
