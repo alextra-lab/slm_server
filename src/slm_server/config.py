@@ -47,6 +47,22 @@ class ModelDefinition(BaseModel):
         None,
         description="Optional chat template kwargs for llama.cpp (e.g. enable_thinking for Qwen3.5). Only used when backend is llamacpp.",
     )
+    # Optional llamacpp-only CLI options; only applied when present (no defaults in code).
+    temp: float | None = Field(None, description="Sampling temperature (llamacpp). Only used when backend is llamacpp.")
+    top_p: float | None = Field(None, description="Top-p sampling (llamacpp). Only used when backend is llamacpp.")
+    top_k: int | None = Field(None, description="Top-k sampling (llamacpp). Only used when backend is llamacpp.")
+    min_p: float | None = Field(None, description="Min-p sampling (llamacpp). Only used when backend is llamacpp.")
+    kv_unified: bool | None = Field(None, description="Use unified KV cache (llamacpp native). Only used when backend is llamacpp.")
+    cache_type_k: str | None = Field(None, description="KV cache type for K (e.g. q8_0). Only used when backend is llamacpp.")
+    cache_type_v: str | None = Field(None, description="KV cache type for V (e.g. q8_0). Only used when backend is llamacpp.")
+    flash_attn: bool | str | None = Field(
+        None,
+        description="Flash attention on/off (llamacpp; true or 'on'). Only used when backend is llamacpp.",
+    )
+    fit: bool | str | None = Field(
+        None,
+        description="Fit option (llamacpp native; true or 'on'). Only used when backend is llamacpp.",
+    )
     model_path: str | None = Field(None, description="Optional path to model file (auto-discovered if not set)")
     enabled: bool = Field(True, description="Whether this model server should be started")
 

@@ -362,10 +362,21 @@ def build_llama_native_command(
     chat_template_kwargs: dict | None,
     model_alias: str | None,
     llama_server_bin: str,
+    *,
+    temp: float | None = None,
+    top_p: float | None = None,
+    top_k: int | None = None,
+    min_p: float | None = None,
+    kv_unified: bool | None = None,
+    cache_type_k: str | None = None,
+    cache_type_v: str | None = None,
+    flash_attn: bool | str | None = None,
+    fit: bool | str | None = None,
 ) -> list[str]:
     """Build command for native llama-server (e.g. from brew install llama.cpp).
 
     Uses Unsloth-recommended flags and supports --chat-template-kwargs (qwen35, qwen35moe).
+    Optional sampling/cache flags are only added when present (config-driven).
     """
     if not (1024 <= port <= 65535):
         raise ValueError(f"Invalid port: {port}. Must be between 1024 and 65535")
@@ -392,7 +403,32 @@ def build_llama_native_command(
         cmd.extend(["--alias", model_alias])
     if chat_template_kwargs:
         cmd.extend(["--chat-template-kwargs", json.dumps(chat_template_kwargs)])
+    # Optional config-driven flags (only add when present)
+    if temp is not None:
+        cmd.extend(["--temp", str(temp)])
+    if top_p is not None:
+        cmd.extend(["--top-p", str(top_p)])
+    if top_k is not None:
+        cmd.extend(["--top-k", str(top_k)])
+    if min_p is not None:
+        cmd.extend(["--min-p", str(min_p)])
+    if kv_unified is True:
+        cmd.append("--kv-unified")
+    if cache_type_k is not None:
+        cmd.extend(["--cache-type-k", cache_type_k])
+    if cache_type_v is not None:
+        cmd.extend(["--cache-type-v", cache_type_v])
+    if flash_attn is not None:
+        cmd.extend(["--flash-attn", "on" if flash_attn in (True, "on", "true") else "off"])
+    if fit is not None:
+        cmd.extend(["--fit", "on" if fit in (True, "on", "true") else "off"])
     return cmd
+
+
+def _cache_type_to_ggml_type(s: str) -> int:
+    """Map cache type string (e.g. q8_0) to GGML type for llama-cpp-python server."""
+    m = {"q8_0": 8, "f16": 1}
+    return m.get(s.lower(), 8)
 
 
 def build_llamacpp_command(
@@ -403,6 +439,14 @@ def build_llamacpp_command(
     max_concurrency: int,
     chat_template_kwargs: dict | None = None,
     model_alias: str | None = None,
+    *,
+    temp: float | None = None,
+    top_p: float | None = None,
+    top_k: int | None = None,
+    min_p: float | None = None,
+    cache_type_k: str | None = None,
+    cache_type_v: str | None = None,
+    flash_attn: bool | str | None = None,
 ) -> list[str]:
     """Build command to start llama.cpp server.
 
@@ -414,6 +458,7 @@ def build_llamacpp_command(
         max_concurrency: Maximum concurrent requests.
         chat_template_kwargs: Optional dict for --chat_template_kwargs (e.g. {"enable_thinking": true} for Qwen3.5).
         model_alias: Model name advertised by the server (for Claude Code / Unsloth; e.g. unsloth/Qwen3.5-35B-A3B).
+        temp, top_p, top_k, min_p, cache_type_k, cache_type_v, flash_attn: Optional; only added when present.
 
     Returns:
         Command list for subprocess.
@@ -444,8 +489,9 @@ def build_llamacpp_command(
     
     # Unsloth guidance: offload all layers to GPU (999), use all CPU threads (-1)
     n_gpu_layers = 999
-    # KV cache: q8_0 reduces VRAM; avoid f16 for Qwen3.5 (Unsloth docs). GGML_TYPE_Q8_0 = 8
-    type_q8_0 = 8
+    type_k_val = _cache_type_to_ggml_type(cache_type_k) if cache_type_k else 8
+    type_v_val = _cache_type_to_ggml_type(cache_type_v) if cache_type_v else 8
+    flash_val = "true" if flash_attn in (True, "on", "true") else "false" if flash_attn is not None else "true"
     cmd = [
         sys.executable,
         "-m",
@@ -462,17 +508,25 @@ def build_llamacpp_command(
         str(n_gpu_layers),
         "--n_threads",
         "-1",
-        # Unsloth-recommended: KV cache q8_0 (less VRAM, better than f16 for Qwen3.5)
         "--type_k",
-        str(type_q8_0),
+        str(type_k_val),
         "--type_v",
-        str(type_q8_0),
+        str(type_v_val),
         "--flash_attn",
-        "true",
+        flash_val,
     ]
     # Alias so Claude Code / clients can use the same model id as in config (per Unsloth docs)
     if model_alias:
         cmd.extend(["--model_alias", model_alias])
+    # Optional config-driven flags (only add when present)
+    if temp is not None:
+        cmd.extend(["--temp", str(temp)])
+    if top_p is not None:
+        cmd.extend(["--top_p", str(top_p)])
+    if top_k is not None:
+        cmd.extend(["--top_k", str(top_k)])
+    if min_p is not None:
+        cmd.extend(["--min_p", str(min_p)])
     return cmd
 
 
@@ -568,6 +622,15 @@ def start_model_server(model_def, config: ModelConfig) -> subprocess.Popen | Non
                     chat_template_kwargs=getattr(model_def, "chat_template_kwargs", None),
                     model_alias=model_def.id,
                     llama_server_bin=native_bin,
+                    temp=getattr(model_def, "temp", None),
+                    top_p=getattr(model_def, "top_p", None),
+                    top_k=getattr(model_def, "top_k", None),
+                    min_p=getattr(model_def, "min_p", None),
+                    kv_unified=getattr(model_def, "kv_unified", None),
+                    cache_type_k=getattr(model_def, "cache_type_k", None),
+                    cache_type_v=getattr(model_def, "cache_type_v", None),
+                    flash_attn=getattr(model_def, "flash_attn", None),
+                    fit=getattr(model_def, "fit", None),
                 )
             else:
                 cmd = build_llamacpp_command(
@@ -578,6 +641,13 @@ def start_model_server(model_def, config: ModelConfig) -> subprocess.Popen | Non
                     model_def.max_concurrency,
                     chat_template_kwargs=getattr(model_def, "chat_template_kwargs", None),
                     model_alias=model_def.id,
+                    temp=getattr(model_def, "temp", None),
+                    top_p=getattr(model_def, "top_p", None),
+                    top_k=getattr(model_def, "top_k", None),
+                    min_p=getattr(model_def, "min_p", None),
+                    cache_type_k=getattr(model_def, "cache_type_k", None),
+                    cache_type_v=getattr(model_def, "cache_type_v", None),
+                    flash_attn=getattr(model_def, "flash_attn", None),
                 )
         else:
             log.error("unknown_backend", backend=model_def.backend, model_id=model_def.id)
