@@ -143,7 +143,7 @@ OpenAI-compatible embeddings. The router resolves `model` the same way as chat c
 Example request:
 ```json
 {
-  "model": "nomic-ai/nomic-embed-text-v1.5",
+  "model": "Qwen/Qwen3-Embedding-0.6B",
   "input": "Hello, world"
 }
 ```
@@ -152,7 +152,7 @@ Example:
 ```bash
 curl -s http://localhost:8000/v1/embeddings \
   -H "Content-Type: application/json" \
-  -d '{"model":"nomic-ai/nomic-embed-text-v1.5","input":"test"}' | jq
+  -d '{"model":"Qwen/Qwen3-Embedding-0.6B","input":"test"}' | jq
 ```
 
 **MLX:** You can also run embedding models with `backend: mlx` and `model_type: embeddings` (via `mlx-openai-server`); use a non-GGUF MLX model path or Hugging Face id.

@@ -73,7 +73,7 @@ Client Request → Routing Service (port 8000) → Route by model ID → Backend
 
 **Current setup:**
 - Port 8000: Routing service (FastAPI) - single endpoint for all requests
-- Ports 8500-8503: Backend model servers (configurable per model)
+- Ports 8500+ (e.g. 8501–8504 in the default `models.yaml`): Backend model servers (configurable per model)
 
 The routing service automatically routes requests to the correct backend based on the model ID in the request body.
 

@@ -70,31 +70,31 @@ models:
 
   # Text embeddings (GGUF): use backend llamacpp + model_type embeddings (llama-server --embedding)
   embeddings:
-    id: "nomic-ai/nomic-embed-text-v1.5"
+    id: "Qwen/Qwen3-Embedding-0.6B"
     backend: "llamacpp"
     port: 8504
     model_type: "embeddings"
-    context_length: 8192
-    quantization: "GGUF"
+    context_length: 32768
+    quantization: "f16"
     max_concurrency: 1
     host: "0.0.0.0"
     default_timeout: 60
     supports_function_calling: false
-    model_path: "/path/to/nomic-embed-text-v1.5-GGUF"  # directory with .gguf or path to .gguf
+    model_path: "/path/to/Qwen3-Embedding-0.6B-GGUF"  # directory with .gguf or path to .gguf
 
   # Reranker (GGUF): llamacpp only; requires native llama-server on PATH (--embedding --pooling rank --reranking)
   rerank:
-    id: "BAAI/bge-reranker-v2-m3"
+    id: "ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF"
     backend: "llamacpp"
     port: 8506
     model_type: "rerank"
     context_length: 8192
-    quantization: "GGUF"
+    quantization: "Q8_0"
     max_concurrency: 1
     host: "0.0.0.0"
     default_timeout: 120
     supports_function_calling: false
-    model_path: "/path/to/bge-reranker-v2-m3-GGUF"  # directory with .gguf or path to .gguf
+    model_path: "/path/to/Qwen3-Reranker-0.6B-Q8_0-GGUF"  # directory with .gguf or path to .gguf
 
   coding:
     id: "mistralai/devstral-small-2-2512"
