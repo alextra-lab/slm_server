@@ -135,8 +135,30 @@ Standard chat completions endpoint. Request body must include `model` field:
 ### `POST /v1/responses`
 Responses API endpoint with automatic fallback. If the backend doesn't support `/v1/responses` (returns 404), the router automatically converts the request to `/v1/chat/completions` format. This provides compatibility with MLX and llama.cpp backends while maintaining LM Studio compatibility.
 
+### `POST /v1/embeddings`
+OpenAI-compatible embeddings. The router resolves `model` the same way as chat completions and forwards to the backend’s `/v1/embeddings`.
+
+**GGUF text embedding models (llama.cpp):** In `config/models.yaml`, set `backend: llamacpp`, `model_type: embeddings`, and `model_path` to your `.gguf` file or a directory containing a single `.gguf`. The launcher adds native `llama-server --embedding` or `python -m llama_cpp.server --embedding true` as appropriate.
+
+Example request:
+```json
+{
+  "model": "nomic-ai/nomic-embed-text-v1.5",
+  "input": "Hello, world"
+}
+```
+
+Example:
+```bash
+curl -s http://localhost:8000/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{"model":"nomic-ai/nomic-embed-text-v1.5","input":"test"}' | jq
+```
+
+**MLX:** You can also run embedding models with `backend: mlx` and `model_type: embeddings` (via `mlx-openai-server`); use a non-GGUF MLX model path or Hugging Face id.
+
 ### `GET /v1/models`
-List all available models and their configurations.
+List all available models and their configurations (includes `model_type`, e.g. `embeddings` vs `lm`).
 
 ### `GET /v1/backends/health`
 Check health status of all configured backend servers. Returns status for each model:

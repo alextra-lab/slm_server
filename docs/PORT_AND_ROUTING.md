@@ -77,6 +77,10 @@ Client Request → Routing Service (port 8000) → Route by model ID → Backend
 
 The routing service automatically routes requests to the correct backend based on the model ID in the request body.
 
+## Embeddings
+
+The same pattern applies to `POST /v1/embeddings` on port **8000**: the client sends `model` in the JSON body; the router forwards to `http://localhost:{backend_port}/v1/embeddings`. Each embedding model still needs its own backend port in `config/models.yaml` (one process per model).
+
 ## Example: Starting Multiple Models for Benchmarking
 
 You can use the benchmark tool to start models with different backends:

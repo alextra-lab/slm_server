@@ -68,10 +68,24 @@ models:
     model_path: "mlx-community/Qwen3-8B-MLX-8bit"  # Hugging Face model ID (auto-downloads)
     # Or use local path: "~/.cache/huggingface/hub/models--mlx-community--Qwen3-8B-MLX-8bit"
 
+  # Text embeddings (GGUF): use backend llamacpp + model_type embeddings (llama-server --embedding)
+  embeddings:
+    id: "nomic-ai/nomic-embed-text-v1.5"
+    backend: "llamacpp"
+    port: 8504
+    model_type: "embeddings"
+    context_length: 8192
+    quantization: "GGUF"
+    max_concurrency: 1
+    host: "0.0.0.0"
+    default_timeout: 60
+    supports_function_calling: false
+    model_path: "/path/to/nomic-embed-text-v1.5-GGUF"  # directory with .gguf or path to .gguf
+
   coding:
     id: "mistralai/devstral-small-2-2512"
     backend: "mlx"  # GGUF files require llamacpp backend
-    port: 8503
+    port: 8505
     context_length: 32768
     quantization: "8bit"
     max_concurrency: 2

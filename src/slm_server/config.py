@@ -85,6 +85,24 @@ def validate_model_config(config: ModelConfig) -> list[str]:
     issues = []
 
     for role, model_def in config.models.items():
+        if model_def.model_type == "embeddings":
+            if model_def.enable_auto_tool_choice:
+                issues.append(
+                    f"{role}: model_type embeddings ignores enable_auto_tool_choice (mlx/llama embedding servers)"
+                )
+            if model_def.tool_call_parser:
+                issues.append(
+                    f"{role}: model_type embeddings does not use tool_call_parser; remove or use an lm model"
+                )
+            if model_def.reasoning_parser:
+                issues.append(
+                    f"{role}: model_type embeddings does not use reasoning_parser; remove or use an lm model"
+                )
+            if model_def.chat_template_kwargs:
+                issues.append(
+                    f"{role}: model_type embeddings does not use chat_template_kwargs; remove for clarity"
+                )
+
         # Check if model_path is provided
         if not model_def.model_path:
             issues.append(f"{role}: model_path is required")

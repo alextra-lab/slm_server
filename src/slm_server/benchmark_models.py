@@ -107,12 +107,25 @@ def start_model_server(
                 config_name=getattr(model_config, "config_name", None),
             )
         elif backend == "llamacpp":
+            mt = getattr(model_config, "model_type", "lm")
             cmd = build_llamacpp_command(
                 model_path,
                 port,
                 model_config.context_length,
                 model_config.quantization,
                 model_config.max_concurrency,
+                chat_template_kwargs=(
+                    None if mt == "embeddings" else getattr(model_config, "chat_template_kwargs", None)
+                ),
+                model_alias=model_config.id,
+                model_type=mt,
+                temp=getattr(model_config, "temp", None),
+                top_p=getattr(model_config, "top_p", None),
+                top_k=getattr(model_config, "top_k", None),
+                min_p=getattr(model_config, "min_p", None),
+                cache_type_k=getattr(model_config, "cache_type_k", None),
+                cache_type_v=getattr(model_config, "cache_type_v", None),
+                flash_attn=getattr(model_config, "flash_attn", None),
             )
         else:
             raise ValueError(f"Unknown backend: {backend}")
@@ -127,7 +140,7 @@ def start_model_server(
     console.print(f"[green]Starting {backend} server with OpenAI-compatible API...[/green]")
     console.print(f"  Command: {' '.join(cmd)}")
     console.print(f"  Base URL: http://localhost:{port}/v1")
-    console.print("  Endpoints: /v1/chat/completions, /v1/completions")
+    console.print("  Endpoints: /v1/chat/completions, /v1/completions, /v1/embeddings")
     console.print(f"  Model: {model_path}")
     console.print(f"  Context Length: {model_config.context_length}")
     console.print(f"  Quantization: {model_config.quantization}")

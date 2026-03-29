@@ -362,6 +362,7 @@ def build_llama_native_command(
     chat_template_kwargs: dict | None,
     model_alias: str | None,
     llama_server_bin: str,
+    model_type: str = "lm",
     *,
     temp: float | None = None,
     top_p: float | None = None,
@@ -377,7 +378,9 @@ def build_llama_native_command(
 
     Uses Unsloth-recommended flags and supports --chat-template-kwargs (qwen35, qwen35moe).
     Optional sampling/cache flags are only added when present (config-driven).
+    For model_type "embeddings", adds --embedding (OpenAI /v1/embeddings).
     """
+    model_type = validate_model_type(model_type)
     if not (1024 <= port <= 65535):
         raise ValueError(f"Invalid port: {port}. Must be between 1024 and 65535")
     if context_length is None:
@@ -401,7 +404,9 @@ def build_llama_native_command(
     ]
     if model_alias:
         cmd.extend(["--alias", model_alias])
-    if chat_template_kwargs:
+    if model_type == "embeddings":
+        cmd.append("--embedding")
+    elif chat_template_kwargs:
         cmd.extend(["--chat-template-kwargs", json.dumps(chat_template_kwargs)])
     # Optional config-driven flags (only add when present)
     if temp is not None:
@@ -439,6 +444,7 @@ def build_llamacpp_command(
     max_concurrency: int,
     chat_template_kwargs: dict | None = None,
     model_alias: str | None = None,
+    model_type: str = "lm",
     *,
     temp: float | None = None,
     top_p: float | None = None,
@@ -458,6 +464,7 @@ def build_llamacpp_command(
         max_concurrency: Maximum concurrent requests.
         chat_template_kwargs: Optional dict for --chat_template_kwargs (e.g. {"enable_thinking": true} for Qwen3.5).
         model_alias: Model name advertised by the server (for Claude Code / Unsloth; e.g. unsloth/Qwen3.5-35B-A3B).
+        model_type: When "embeddings", enables embedding mode (--embedding true).
         temp, top_p, top_k, min_p, cache_type_k, cache_type_v, flash_attn: Optional; only added when present.
 
     Returns:
@@ -466,6 +473,8 @@ def build_llamacpp_command(
     Raises:
         ValueError: If any input validation fails.
     """
+    model_type = validate_model_type(model_type)
+
     # Validate and sanitize model path
     model_path = validate_path(model_path, allow_hf_model=False)
     
@@ -518,6 +527,8 @@ def build_llamacpp_command(
     # Alias so Claude Code / clients can use the same model id as in config (per Unsloth docs)
     if model_alias:
         cmd.extend(["--model_alias", model_alias])
+    if model_type == "embeddings":
+        cmd.extend(["--embedding", "true"])
     # Optional config-driven flags (only add when present)
     if temp is not None:
         cmd.extend(["--temp", str(temp)])
@@ -569,6 +580,13 @@ def start_model_server(model_def, config: ModelConfig) -> subprocess.Popen | Non
         model_path=model_path,
     )
 
+    model_type = getattr(model_def, "model_type", "lm")
+    is_embeddings = model_type == "embeddings"
+    # Embedding servers do not use chat templates
+    chat_template_kwargs = (
+        None if is_embeddings else getattr(model_def, "chat_template_kwargs", None)
+    )
+
     # Build command based on backend (llamacpp may use native binary or Python server)
     used_native_llama_server = False
     try:
@@ -578,7 +596,7 @@ def start_model_server(model_def, config: ModelConfig) -> subprocess.Popen | Non
                 port=model_def.port,
                 context_length=model_def.context_length,
                 max_concurrency=model_def.max_concurrency,
-                model_type=getattr(model_def, "model_type", "lm"),
+                model_type=model_type,
                 host=getattr(model_def, "host", "0.0.0.0"),
                 enable_auto_tool_choice=getattr(model_def, "enable_auto_tool_choice", False),
                 tool_call_parser=getattr(model_def, "tool_call_parser", None),
@@ -619,9 +637,10 @@ def start_model_server(model_def, config: ModelConfig) -> subprocess.Popen | Non
                     model_def.context_length,
                     model_def.quantization,
                     model_def.max_concurrency,
-                    chat_template_kwargs=getattr(model_def, "chat_template_kwargs", None),
+                    chat_template_kwargs=chat_template_kwargs,
                     model_alias=model_def.id,
                     llama_server_bin=native_bin,
+                    model_type=model_type,
                     temp=getattr(model_def, "temp", None),
                     top_p=getattr(model_def, "top_p", None),
                     top_k=getattr(model_def, "top_k", None),
@@ -639,8 +658,9 @@ def start_model_server(model_def, config: ModelConfig) -> subprocess.Popen | Non
                     model_def.context_length,
                     model_def.quantization,
                     model_def.max_concurrency,
-                    chat_template_kwargs=getattr(model_def, "chat_template_kwargs", None),
+                    chat_template_kwargs=chat_template_kwargs,
                     model_alias=model_def.id,
+                    model_type=model_type,
                     temp=getattr(model_def, "temp", None),
                     top_p=getattr(model_def, "top_p", None),
                     top_k=getattr(model_def, "top_k", None),
@@ -662,9 +682,9 @@ def start_model_server(model_def, config: ModelConfig) -> subprocess.Popen | Non
     if (
         model_def.backend == "llamacpp"
         and not used_native_llama_server
-        and getattr(model_def, "chat_template_kwargs", None)
+        and chat_template_kwargs
     ):
-        kw = json.dumps(model_def.chat_template_kwargs)
+        kw = json.dumps(chat_template_kwargs)
         run_env["LLAMA_CHAT_TEMPLATE_KWARGS"] = kw
         run_env["LLAMA_ARG_CHAT_TEMPLATE_KWARGS"] = kw
     try:
