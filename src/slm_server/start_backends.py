@@ -30,7 +30,7 @@ ALLOWED_REASONING_PARSERS = {
 }
 
 ALLOWED_MODEL_TYPES = {
-    "lm", "multimodal", "image-generation", "image-edit", "embeddings", "whisper"
+    "lm", "multimodal", "image-generation", "image-edit", "embeddings", "rerank", "whisper"
 }
 
 ALLOWED_CONFIG_NAMES = {
@@ -263,7 +263,7 @@ def build_mlx_command(
         port: Server port.
         context_length: Maximum context length (passed to mlx-openai-server). None uses model default.
         max_concurrency: Maximum concurrent requests.
-        model_type: Type of model (lm, multimodal, image-generation, image-edit, embeddings, whisper).
+        model_type: Type of model (lm, multimodal, image-generation, image-edit, embeddings, rerank, whisper).
         host: Host to run the server on.
         enable_auto_tool_choice: Enable automatic tool choice.
         tool_call_parser: Tool call parser to use (e.g., "qwen3", "qwen3_coder").
@@ -379,6 +379,7 @@ def build_llama_native_command(
     Uses Unsloth-recommended flags and supports --chat-template-kwargs (qwen35, qwen35moe).
     Optional sampling/cache flags are only added when present (config-driven).
     For model_type "embeddings", adds --embedding (OpenAI /v1/embeddings).
+    For model_type "rerank", adds --embedding, --pooling rank, --reranking (OpenAI /v1/rerank).
     """
     model_type = validate_model_type(model_type)
     if not (1024 <= port <= 65535):
@@ -406,6 +407,8 @@ def build_llama_native_command(
         cmd.extend(["--alias", model_alias])
     if model_type == "embeddings":
         cmd.append("--embedding")
+    elif model_type == "rerank":
+        cmd.extend(["--embedding", "--pooling", "rank", "--reranking"])
     elif chat_template_kwargs:
         cmd.extend(["--chat-template-kwargs", json.dumps(chat_template_kwargs)])
     # Optional config-driven flags (only add when present)
@@ -465,6 +468,7 @@ def build_llamacpp_command(
         chat_template_kwargs: Optional dict for --chat_template_kwargs (e.g. {"enable_thinking": true} for Qwen3.5).
         model_alias: Model name advertised by the server (for Claude Code / Unsloth; e.g. unsloth/Qwen3.5-35B-A3B).
         model_type: When "embeddings", enables embedding mode (--embedding true).
+        rerank is not supported (use native llama-server only).
         temp, top_p, top_k, min_p, cache_type_k, cache_type_v, flash_attn: Optional; only added when present.
 
     Returns:
@@ -474,6 +478,11 @@ def build_llamacpp_command(
         ValueError: If any input validation fails.
     """
     model_type = validate_model_type(model_type)
+    if model_type == "rerank":
+        raise ValueError(
+            "model_type rerank requires native llama-server (llama_cpp.server has no /v1/rerank); "
+            "install llama.cpp and ensure llama-server is on PATH"
+        )
 
     # Validate and sanitize model path
     model_path = validate_path(model_path, allow_hf_model=False)
@@ -581,16 +590,22 @@ def start_model_server(model_def, config: ModelConfig) -> subprocess.Popen | Non
     )
 
     model_type = getattr(model_def, "model_type", "lm")
-    is_embeddings = model_type == "embeddings"
-    # Embedding servers do not use chat templates
+    skip_chat_template = model_type in ("embeddings", "rerank")
     chat_template_kwargs = (
-        None if is_embeddings else getattr(model_def, "chat_template_kwargs", None)
+        None if skip_chat_template else getattr(model_def, "chat_template_kwargs", None)
     )
 
     # Build command based on backend (llamacpp may use native binary or Python server)
     used_native_llama_server = False
     try:
         if model_def.backend == "mlx":
+            if model_type == "rerank":
+                log.error(
+                    "mlx_does_not_support_rerank",
+                    model_id=model_def.id,
+                    message="model_type rerank requires backend llamacpp and native llama-server",
+                )
+                return None
             cmd = build_mlx_command(
                 model_path=Path(model_path) if not is_hf_model else model_path,
                 port=model_def.port,
@@ -628,6 +643,13 @@ def start_model_server(model_def, config: ModelConfig) -> subprocess.Popen | Non
                 log.info("resolved_gguf_from_directory", model_id=model_def.id, gguf=str(model_path_obj))
             # Prefer native llama-server (e.g. brew install llama.cpp) for Qwen3.5 and full Unsloth support
             native_bin = find_native_llama_server()
+            if model_type == "rerank" and not native_bin:
+                log.error(
+                    "rerank_requires_native_llama_server",
+                    model_id=model_def.id,
+                    message="model_type rerank needs llama-server on PATH; llama_cpp.server does not expose /v1/rerank",
+                )
+                return None
             if native_bin:
                 used_native_llama_server = True
                 log.info("using_native_llama_server", path=native_bin, model_id=model_def.id)

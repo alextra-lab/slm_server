@@ -7,7 +7,7 @@
 # - id: Model identifier (used for routing requests)
 # - backend: Backend type (mlx or llamacpp)
 # - port: Port number for this model's server instance
-# - model_type: Type of model (lm, multimodal, image-generation, image-edit, embeddings, whisper). Default: lm
+# - model_type: Type of model (lm, multimodal, image-generation, image-edit, embeddings, rerank, whisper). Default: lm (rerank: llamacpp + native llama-server only)
 # - context_length: Maximum context length. Default: None (uses model's default)
 # - quantization: Quantization level
 # - max_concurrency: Maximum concurrent requests. Default: 1
@@ -38,7 +38,7 @@ models:
     id: "qwen/qwen3-4b-2507"
     backend: "mlx"
     port: 8501
-    model_type: "lm"  # Type of model (lm, multimodal, image-generation, image-edit, embeddings, whisper)
+    model_type: "lm"  # lm, multimodal, image-generation, image-edit, embeddings, rerank, whisper
     context_length: 40960  # Optional: None uses model's default
     quantization: "8bit"
     max_concurrency: 2  # Default: 1
@@ -55,7 +55,7 @@ models:
     id: "qwen/qwen3-8b"
     backend: "mlx"
     port: 8502
-    model_type: "lm"  # Type of model (lm, multimodal, image-generation, image-edit, embeddings, whisper)
+    model_type: "lm"  # lm, multimodal, image-generation, image-edit, embeddings, rerank, whisper
     context_length: 65536  # Optional: None uses model's default
     quantization: "8bit"
     max_concurrency: 2  # Default: 1
@@ -81,6 +81,20 @@ models:
     default_timeout: 60
     supports_function_calling: false
     model_path: "/path/to/nomic-embed-text-v1.5-GGUF"  # directory with .gguf or path to .gguf
+
+  # Reranker (GGUF): llamacpp only; requires native llama-server on PATH (--embedding --pooling rank --reranking)
+  rerank:
+    id: "BAAI/bge-reranker-v2-m3"
+    backend: "llamacpp"
+    port: 8506
+    model_type: "rerank"
+    context_length: 8192
+    quantization: "GGUF"
+    max_concurrency: 1
+    host: "0.0.0.0"
+    default_timeout: 120
+    supports_function_calling: false
+    model_path: "/path/to/bge-reranker-v2-m3-GGUF"  # directory with .gguf or path to .gguf
 
   coding:
     id: "mistralai/devstral-small-2-2512"

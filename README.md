@@ -157,8 +157,15 @@ curl -s http://localhost:8000/v1/embeddings \
 
 **MLX:** You can also run embedding models with `backend: mlx` and `model_type: embeddings` (via `mlx-openai-server`); use a non-GGUF MLX model path or Hugging Face id.
 
+### `POST /v1/rerank`
+Reranking API (llama.cpp). The router resolves `model` like other routes and forwards to the backend’s `/v1/rerank`.
+
+**llama.cpp only:** Set `backend: llamacpp`, `model_type: rerank`, and a local GGUF path. Startup uses **native `llama-server`** with `--embedding`, `--pooling rank`, and `--reranking`. `llama-server` must be on your PATH (for example `brew install llama.cpp`). The Python `llama_cpp.server` path is not used for rerank.
+
+Request shape follows [llama.cpp server](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md) (query + documents). **MLX / `mlx-openai-server` does not support rerank** in this project.
+
 ### `GET /v1/models`
-List all available models and their configurations (includes `model_type`, e.g. `embeddings` vs `lm`).
+List all available models and their configurations (includes `model_type`, e.g. `embeddings`, `rerank`, or `lm`).
 
 ### `GET /v1/backends/health`
 Check health status of all configured backend servers. Returns status for each model:

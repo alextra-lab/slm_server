@@ -18,8 +18,10 @@ class ModelDefinition(BaseModel):
     quantization: str = Field(..., description="Quantization level")
     max_concurrency: int = Field(1, ge=1, description="Maximum concurrent requests (default: 1)")
     default_timeout: int = Field(..., ge=1, description="Default timeout in seconds")
-    model_type: Literal["lm", "multimodal", "image-generation", "image-edit", "embeddings", "whisper"] = Field(
-        "lm", description="Type of model to run (default: lm)"
+    model_type: Literal[
+        "lm", "multimodal", "image-generation", "image-edit", "embeddings", "rerank", "whisper"
+    ] = Field(
+        "lm", description="Type of model to run (default: lm). rerank: llamacpp + native llama-server only."
     )
     host: str = Field("0.0.0.0", description="Host to run the server on (default: 0.0.0.0)")
     enable_auto_tool_choice: bool = Field(
@@ -73,6 +75,29 @@ class ModelConfig(BaseModel):
     models: dict[str, ModelDefinition]
 
 
+def _non_lm_model_config_warnings(role: str, model_def: ModelDefinition) -> list[str]:
+    """Warnings for embedding/rerank servers that do not use LM tool/reasoning/chat-template options."""
+    label = model_def.model_type
+    issues: list[str] = []
+    if model_def.enable_auto_tool_choice:
+        issues.append(
+            f"{role}: model_type {label} ignores enable_auto_tool_choice (not used for this server mode)"
+        )
+    if model_def.tool_call_parser:
+        issues.append(
+            f"{role}: model_type {label} does not use tool_call_parser; remove or use an lm model"
+        )
+    if model_def.reasoning_parser:
+        issues.append(
+            f"{role}: model_type {label} does not use reasoning_parser; remove or use an lm model"
+        )
+    if model_def.chat_template_kwargs:
+        issues.append(
+            f"{role}: model_type {label} does not use chat_template_kwargs; remove for clarity"
+        )
+    return issues
+
+
 def validate_model_config(config: ModelConfig) -> list[str]:
     """Validate model configuration and return list of warnings/errors.
 
@@ -85,23 +110,14 @@ def validate_model_config(config: ModelConfig) -> list[str]:
     issues = []
 
     for role, model_def in config.models.items():
-        if model_def.model_type == "embeddings":
-            if model_def.enable_auto_tool_choice:
-                issues.append(
-                    f"{role}: model_type embeddings ignores enable_auto_tool_choice (mlx/llama embedding servers)"
-                )
-            if model_def.tool_call_parser:
-                issues.append(
-                    f"{role}: model_type embeddings does not use tool_call_parser; remove or use an lm model"
-                )
-            if model_def.reasoning_parser:
-                issues.append(
-                    f"{role}: model_type embeddings does not use reasoning_parser; remove or use an lm model"
-                )
-            if model_def.chat_template_kwargs:
-                issues.append(
-                    f"{role}: model_type embeddings does not use chat_template_kwargs; remove for clarity"
-                )
+        if model_def.model_type == "rerank" and model_def.backend != "llamacpp":
+            issues.append(
+                f"{role}: model_type rerank is only supported with backend llamacpp "
+                "(native llama-server with --reranking; mlx-openai-server has no rerank mode)"
+            )
+
+        if model_def.model_type in ("embeddings", "rerank"):
+            issues.extend(_non_lm_model_config_warnings(role, model_def))
 
         # Check if model_path is provided
         if not model_def.model_path:

@@ -46,9 +46,11 @@ from rich.table import Table
 from slm_server.config import ModelDefinition, load_model_config
 from slm_server.start_backends import (
     BackendType,
+    build_llama_native_command,
     build_llamacpp_command,
     build_mlx_command,
     find_model_path,
+    find_native_llama_server,
 )
 
 # Configure structlog
@@ -80,7 +82,7 @@ def start_model_server(
 
     All backends are configured to provide OpenAI-compatible endpoints:
     - Base URL: http://localhost:{port}/v1
-    - Endpoints: /v1/chat/completions, /v1/completions, /v1/embeddings
+    - Endpoints: /v1/chat/completions, /v1/completions, /v1/embeddings, /v1/rerank (rerank: native llama-server only)
 
     Args:
         backend: Backend type (mlx, llamacpp)
@@ -93,13 +95,20 @@ def start_model_server(
     """
     cmd: list[str] | None = None
     try:
+        mt = getattr(model_config, "model_type", "lm")
         if backend == "mlx":
+            if mt == "rerank":
+                console.print(
+                    "[red]model_type rerank requires backend llamacpp and native llama-server[/red]"
+                )
+                log.error("benchmark_mlx_rerank_not_supported", model_id=model_config.id)
+                return None
             cmd = build_mlx_command(
                 model_path=model_path,
                 port=port,
                 context_length=model_config.context_length,
                 max_concurrency=model_config.max_concurrency,
-                model_type=getattr(model_config, "model_type", "lm"),
+                model_type=mt,
                 host=getattr(model_config, "host", "0.0.0.0"),
                 enable_auto_tool_choice=getattr(model_config, "enable_auto_tool_choice", False),
                 tool_call_parser=getattr(model_config, "tool_call_parser", None),
@@ -107,26 +116,65 @@ def start_model_server(
                 config_name=getattr(model_config, "config_name", None),
             )
         elif backend == "llamacpp":
-            mt = getattr(model_config, "model_type", "lm")
-            cmd = build_llamacpp_command(
-                model_path,
-                port,
-                model_config.context_length,
-                model_config.quantization,
-                model_config.max_concurrency,
-                chat_template_kwargs=(
-                    None if mt == "embeddings" else getattr(model_config, "chat_template_kwargs", None)
-                ),
-                model_alias=model_config.id,
-                model_type=mt,
-                temp=getattr(model_config, "temp", None),
-                top_p=getattr(model_config, "top_p", None),
-                top_k=getattr(model_config, "top_k", None),
-                min_p=getattr(model_config, "min_p", None),
-                cache_type_k=getattr(model_config, "cache_type_k", None),
-                cache_type_v=getattr(model_config, "cache_type_v", None),
-                flash_attn=getattr(model_config, "flash_attn", None),
+            chat_kw = (
+                None
+                if mt in ("embeddings", "rerank")
+                else getattr(model_config, "chat_template_kwargs", None)
             )
+            if mt == "rerank":
+                native_bin = find_native_llama_server()
+                if not native_bin:
+                    console.print(
+                        "[red]model_type rerank requires llama-server on PATH "
+                        "(brew install llama.cpp)[/red]"
+                    )
+                    log.error("benchmark_rerank_no_native_llama", model_id=model_config.id)
+                    return None
+                model_path_obj = model_path
+                if model_path_obj.is_dir():
+                    gguf_files = sorted(model_path_obj.glob("*.gguf"))
+                    if not gguf_files:
+                        console.print(f"[red]No .gguf in directory: {model_path_obj}[/red]")
+                        return None
+                    model_path_obj = gguf_files[0]
+                cmd = build_llama_native_command(
+                    model_path_obj,
+                    port,
+                    model_config.context_length,
+                    model_config.quantization,
+                    model_config.max_concurrency,
+                    chat_kw,
+                    model_config.id,
+                    native_bin,
+                    model_type="rerank",
+                    temp=getattr(model_config, "temp", None),
+                    top_p=getattr(model_config, "top_p", None),
+                    top_k=getattr(model_config, "top_k", None),
+                    min_p=getattr(model_config, "min_p", None),
+                    kv_unified=getattr(model_config, "kv_unified", None),
+                    cache_type_k=getattr(model_config, "cache_type_k", None),
+                    cache_type_v=getattr(model_config, "cache_type_v", None),
+                    flash_attn=getattr(model_config, "flash_attn", None),
+                    fit=getattr(model_config, "fit", None),
+                )
+            else:
+                cmd = build_llamacpp_command(
+                    model_path,
+                    port,
+                    model_config.context_length,
+                    model_config.quantization,
+                    model_config.max_concurrency,
+                    chat_template_kwargs=chat_kw,
+                    model_alias=model_config.id,
+                    model_type=mt,
+                    temp=getattr(model_config, "temp", None),
+                    top_p=getattr(model_config, "top_p", None),
+                    top_k=getattr(model_config, "top_k", None),
+                    min_p=getattr(model_config, "min_p", None),
+                    cache_type_k=getattr(model_config, "cache_type_k", None),
+                    cache_type_v=getattr(model_config, "cache_type_v", None),
+                    flash_attn=getattr(model_config, "flash_attn", None),
+                )
         else:
             raise ValueError(f"Unknown backend: {backend}")
     except ValueError as e:
@@ -140,7 +188,7 @@ def start_model_server(
     console.print(f"[green]Starting {backend} server with OpenAI-compatible API...[/green]")
     console.print(f"  Command: {' '.join(cmd)}")
     console.print(f"  Base URL: http://localhost:{port}/v1")
-    console.print("  Endpoints: /v1/chat/completions, /v1/completions, /v1/embeddings")
+    console.print("  Endpoints: /v1/chat/completions, /v1/completions, /v1/embeddings, /v1/rerank")
     console.print(f"  Model: {model_path}")
     console.print(f"  Context Length: {model_config.context_length}")
     console.print(f"  Quantization: {model_config.quantization}")

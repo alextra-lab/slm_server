@@ -487,6 +487,118 @@ async def embeddings(request: Request) -> JSONResponse:
         )
 
 
+@app.post("/v1/rerank", response_model=None)
+async def rerank(request: Request) -> JSONResponse:
+    """Route rerank requests to the appropriate backend (llama-server /v1/rerank)."""
+    try:
+        body = await request.json()
+        model_id = body.get("model")
+        if not model_id:
+            raise HTTPException(status_code=400, detail="Missing 'model' field in request body")
+
+        model_def = _get_model_definition(model_id, request.app.state.model_config)
+        backend_url = _get_backend_url(model_def, "/v1/rerank")
+
+        log.info(
+            "routing_rerank_request",
+            model_id=model_id,
+            backend=model_def.backend,
+            port=model_def.port,
+        )
+
+        filtered_headers = _filtered_forward_headers(request)
+        client = request.app.state.http_client
+        timeout = httpx.Timeout(
+            connect=10.0,
+            read=model_def.default_timeout,
+            write=30.0,
+            pool=10.0,
+        )
+
+        response = await client.post(
+            backend_url,
+            json=body,
+            headers=filtered_headers,
+            timeout=timeout,
+        )
+
+        if response.status_code >= 400:
+            try:
+                error_detail = response.json()
+            except Exception:
+                error_detail = response.text[:500]
+            log.warning(
+                "backend_error_response",
+                status_code=response.status_code,
+                model_id=model_id,
+                backend=model_def.backend,
+                port=model_def.port,
+                error_detail=error_detail,
+            )
+
+        return JSONResponse(
+            content=response.json(),
+            status_code=response.status_code,
+            headers=_filter_response_headers(response.headers),
+        )
+
+    except httpx.HTTPStatusError as e:
+        try:
+            error_detail = e.response.json()
+        except Exception:
+            error_detail = e.response.text[:500]
+
+        log.error(
+            "backend_http_error",
+            status_code=e.response.status_code,
+            model_id=model_id if "model_id" in locals() else "unknown",
+            error_detail=error_detail,
+        )
+
+        return _build_error_response(
+            status_code=e.response.status_code,
+            message=f"Backend error: {error_detail}",
+            model_id=model_id if "model_id" in locals() else None,
+            backend_port=model_def.port if "model_def" in locals() else None,
+        )
+
+    except httpx.ConnectError:
+        log.error(
+            "backend_unreachable",
+            model_id=model_id if "model_id" in locals() else "unknown",
+            port=model_def.port if "model_def" in locals() else "unknown",
+        )
+        return _build_error_response(
+            status_code=503,
+            message="Backend server unreachable. Is the model server running?",
+            model_id=model_id if "model_id" in locals() else None,
+            backend_port=model_def.port if "model_def" in locals() else None,
+        )
+
+    except httpx.TimeoutException:
+        log.error(
+            "backend_timeout",
+            model_id=model_id if "model_id" in locals() else "unknown",
+            timeout=model_def.default_timeout if "model_def" in locals() else "unknown",
+        )
+        return _build_error_response(
+            status_code=504,
+            message="Backend request timeout. The model may be overloaded.",
+            model_id=model_id if "model_id" in locals() else None,
+            backend_port=model_def.port if "model_def" in locals() else None,
+        )
+
+    except HTTPException:
+        raise
+
+    except Exception as e:
+        log.error("routing_error", error=str(e), error_type=type(e).__name__)
+        return _build_error_response(
+            status_code=500,
+            message="Internal server error while routing request.",
+        )
+
+
 @app.post("/v1/responses", response_model=None)
 async def responses(request: Request) -> JSONResponse | StreamingResponse:
     """Route responses API requests with automatic fallback to chat/completions.

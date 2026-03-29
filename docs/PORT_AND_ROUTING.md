@@ -81,6 +81,10 @@ The routing service automatically routes requests to the correct backend based o
 
 The same pattern applies to `POST /v1/embeddings` on port **8000**: the client sends `model` in the JSON body; the router forwards to `http://localhost:{backend_port}/v1/embeddings`. Each embedding model still needs its own backend port in `config/models.yaml` (one process per model).
 
+## Rerank
+
+`POST /v1/rerank` on port **8000** forwards to `http://localhost:{backend_port}/v1/rerank`. Rerank backends are **llamacpp + native `llama-server` only** (see README).
+
 ## Example: Starting Multiple Models for Benchmarking
 
 You can use the benchmark tool to start models with different backends:
