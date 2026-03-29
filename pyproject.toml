@@ -46,6 +46,9 @@ llamacpp = [
 [tool.uv]
 # mlx-openai-server 1.5.1 → mlx-lm → transformers 5.0.0rc3 (prerelease)
 prerelease = "allow"
+constraint-dependencies = [
+    "requests>=2.33.0",  # GHSA-gc5v-m9x4-r6x2 (transitive via outlines / mlx stack)
+]
 
 [tool.ruff]
 line-length = 100
