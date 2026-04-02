@@ -14,7 +14,7 @@ Backend Model Servers (MLX/llama.cpp on ports 8501, 8502, ...)
 
 ## Requirements
 
-- macOS with Apple Silicon (M1, M2, M3, M4) — required for MLX backend; llama.cpp works cross-platform
+- macOS with Apple Silicon — required for MLX backend; llama.cpp works cross-platform
 - Python 3.12+
 - [uv](https://github.com/astral-sh/uv) package manager
 - For llama.cpp: `llama-server` on PATH (e.g. `brew install llama.cpp`) — required for rerank and Qwen3.5/newer architectures
