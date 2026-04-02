@@ -47,7 +47,11 @@ llamacpp = [
 # mlx-openai-server 1.5.1 → mlx-lm → transformers 5.0.0rc3 (prerelease)
 prerelease = "allow"
 constraint-dependencies = [
-    "requests>=2.33.0",  # GHSA-gc5v-m9x4-r6x2 (transitive via outlines / mlx stack)
+    "requests>=2.33.0",   # GHSA-gc5v-m9x4-r6x2 (transitive via outlines / mlx stack)
+    "aiohttp>=3.13.4",    # 10 CVEs in <=3.13.3: header injection, DoS, SSRF, cookie leaks (transitive)
+    "pygments>=2.20.0",   # GHSA-hmwr-4x9x-jgrw ReDoS in GUID regex (transitive via rich)
+    # diskcache<=5.6.3 has unsafe pickle deserialization (GHSA-7gh8-9274-8555); no upstream patch yet.
+    # Risk is low for local-only deployments. Track: https://github.com/grantjenks/python-diskcache/issues
 ]
 
 [tool.ruff]
