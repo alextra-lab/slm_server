@@ -4,7 +4,6 @@
 # This script starts:
 # 1. Backend model servers (MLX/llama.cpp)
 # 2. FastAPI routing service
-# 3. Nginx (optional, if nginx is installed)
 
 set -e
 

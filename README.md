@@ -1,6 +1,6 @@
 # SLM Server
 
-Unified LLM server with intelligent routing based on model ID. Optimized for Apple Silicon (M1/M2/M3) with MLX backend support.
+Unified LLM server with model-ID-based routing. Designed for Apple Silicon (M1/M2/M3/M4) using MLX and llama.cpp backends.
 
 ## Architecture
 
@@ -9,74 +9,38 @@ Client Request (port 8000)
     ↓
 Routing Service (FastAPI, port 8000)
     ↓ (reads model ID from request body)
-Backend Model Servers (MLX/llama.cpp on ports 8500, 8501, 8502, ...)
+Backend Model Servers (MLX/llama.cpp on ports 8501, 8502, ...)
 ```
-
-## Features
-
-- **Apple Silicon optimized**: MLX backend leverages Apple's Metal Performance Shaders for fast inference on M1/M2/M3 chips
-- **Single endpoint**: All requests go to `http://localhost:8000/v1`
-- **Model-based routing**: Extracts model ID from request body and routes to correct backend
-- **Multi-backend support**: MLX (Apple Silicon) and llama.cpp (cross-platform)
-- **Port per model**: Each model runs on its own port (configured in `config/models.yaml`)
-- **OpenAI-compatible**: Full compatibility with OpenAI API format
 
 ## Requirements
 
-- **macOS with Apple Silicon** (M1, M2, M3, or later) - Recommended for MLX backend
+- macOS with Apple Silicon (M1, M2, M3, M4) — required for MLX backend; llama.cpp works cross-platform
 - Python 3.12+
 - [uv](https://github.com/astral-sh/uv) package manager
-
-> **Note:** While llama.cpp backend works cross-platform, the MLX backend (recommended) requires Apple Silicon for optimal performance.
+- For llama.cpp: `llama-server` on PATH (e.g. `brew install llama.cpp`) — required for rerank and Qwen3.5/newer architectures
 
 ## Quick Start
 
-1. **Clone and install dependencies**:
+1. **Install dependencies**:
 ```bash
 git clone <repository-url>
 cd slm_server
-uv sync
-```
-
-2. **Install backend dependencies** (optional, only what you need):
-```bash
 uv sync --extra mlx        # For MLX backend
-uv sync --extra llamacpp   # For llama.cpp backend
+uv sync --extra llamacpp   # For llama.cpp backend (Python server fallback)
 ```
 
-3. **Set up configuration files**:
+2. **Configure models**:
 ```bash
-# Copy configuration template
 cp config/models.yaml.example config/models.yaml
-
 # Edit config/models.yaml with your model paths
 ```
 
-4. **Configure models** (edit `config/models.yaml`):
-```yaml
-models:
-  router:
-    id: "qwen/qwen3-1.7b"
-    backend: "mlx"  # or "llamacpp"
-    port: 8500
-    context_length: 32768
-    quantization: "8bit"
-    max_concurrency: 4
-    default_timeout: 10
-    supports_function_calling: false
-    model_path: "mlx-community/LFM2.5-1.2B-Instruct-8bit"  # Hugging Face model ID (auto-downloads)
-    # Or use local path: "~/.cache/huggingface/hub/models--mlx-community--LFM2.5-1.2B-Instruct-8bit"
-```
-
-5. **Start all services** (recommended):
+3. **Start all services**:
 ```bash
 ./start.sh
 ```
 
-For detailed setup instructions, see [SETUP.md](SETUP.md).
-
 Or start individually:
-
 ```bash
 # Terminal 1: Start backend servers
 uv run python -m slm_server backends
@@ -85,62 +49,94 @@ uv run python -m slm_server backends
 uv run python -m slm_server router
 ```
 
+For detailed setup, see [SETUP.md](SETUP.md).
+
 ## Configuration
 
-See `config/models.yaml.example` for a template. Copy it to `config/models.yaml` and configure your models.
+Copy `config/models.yaml.example` to `config/models.yaml` and set your model paths. Each model entry maps a role name to a server instance.
 
-Each model needs:
-- `id`: Model identifier (used for routing - must match what's in request body)
-- `backend`: Backend type (`mlx` or `llamacpp`)
-- `port`: Port number for this model's server (must be unique per model)
-- `context_length`, `quantization`, `max_concurrency`, `default_timeout`: Model-specific settings
-- `model_path`: Path to model file or Hugging Face model ID
+### All Configuration Fields
 
-### Model Path Options
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `id` | yes | — | Model identifier used for routing (must match `model` field in requests) |
+| `backend` | yes | — | `mlx` or `llamacpp` |
+| `port` | yes | — | Port for this model's backend server (must be unique) |
+| `model_path` | yes | — | Local path to model file/directory, or Hugging Face model ID (MLX only for HF IDs) |
+| `default_timeout` | yes | — | Request timeout in seconds |
+| `quantization` | yes | — | Quantization level (e.g. `8bit`, `Q8_0`, `f16`) — informational for MLX; affects KV cache defaults for llamacpp |
+| `model_type` | no | `lm` | `lm`, `multimodal`, `image-generation`, `image-edit`, `embeddings`, `rerank`, or `whisper` |
+| `context_length` | no | model default | Maximum context length; omit to use the model's built-in default |
+| `max_concurrency` | no | `1` | Maximum concurrent requests |
+| `host` | no | `0.0.0.0` | Host the backend server binds to |
+| `enabled` | no | `true` | Set to `false` to skip this model on startup |
+| `supports_function_calling` | no | `false` | Reported in `/v1/models` response |
 
-You can specify models in two ways:
+**MLX-only fields** (passed to `mlx-openai-server launch`):
 
-1. **Hugging Face model ID** (recommended): Automatically downloads on first use
-   ```yaml
-   model_path: "mlx-community/LFM2.5-1.2B-Instruct-8bit"
-   ```
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enable_auto_tool_choice` | `false` | Pass `--enable-auto-tool-choice` to mlx-openai-server |
+| `tool_call_parser` | `null` | Parser for tool calls. Options: `qwen3`, `glm4_moe`, `qwen3_coder`, `qwen3_moe`, `qwen3_next`, `qwen3_vl`, `harmony`, `minimax_m2` |
+| `reasoning_parser` | `null` | Parser for reasoning/thinking tokens. Options: `qwen3`, `glm4_moe`, `qwen3_moe`, `qwen3_next`, `qwen3_vl`, `harmony`, `minimax_m2` |
+| `config_name` | `flux-schnell` / `flux-kontext-dev` | Config name for `image-generation` or `image-edit` model types |
 
-2. **Local file path**: Full path to model directory or file
-   ```yaml
-   model_path: "~/.cache/huggingface/hub/models--mlx-community--LFM2.5-1.2B-Instruct-8bit"
-   # Or any local directory containing the model
-   ```
+**llama.cpp-only fields** (passed to `llama-server` or `llama_cpp.server`):
 
-### Model Discovery
+| Field | Default | Description |
+|-------|---------|-------------|
+| `chat_template_kwargs` | `null` | Dict passed as `--chat-template-kwargs` (e.g. `{enable_thinking: true}` for Qwen3.5) |
+| `temp` | — | Sampling temperature |
+| `top_p` | — | Top-p sampling |
+| `top_k` | — | Top-k sampling |
+| `min_p` | — | Min-p sampling |
+| `cache_type_k` | — | KV cache type for K (e.g. `q8_0`, `f16`) |
+| `cache_type_v` | — | KV cache type for V (e.g. `q8_0`, `f16`) |
+| `flash_attn` | — | Flash attention (`true` / `false`) |
+| `kv_unified` | — | Unified KV cache — native `llama-server` only |
+| `fit` | — | `--fit` flag — native `llama-server` only |
 
-Models can be specified in two ways:
+### Model Path
 
-1. **Hugging Face model ID**: The server automatically downloads models from Hugging Face on first use. Models are cached in `~/.cache/huggingface/hub/`.
+Two formats are accepted:
 
-2. **Local file path**: Point directly to a model directory or file on your system. You can download models manually from Hugging Face or use any local directory.
+- **Hugging Face model ID** (MLX backend only): downloaded automatically on first use
+  ```yaml
+  model_path: "mlx-community/Qwen3-8B-MLX-8bit"
+  ```
+
+- **Local path**: directory containing a `.gguf` (llamacpp) or model files (MLX), or a direct path to a `.gguf` file
+  ```yaml
+  model_path: "/path/to/models/Qwen3.5-9B-GGUF"
+  ```
+
+For llamacpp with a directory, the server picks the first `.gguf` file found (alphabetically). Hugging Face model IDs are not supported for llamacpp — use a local path.
 
 ## API
 
-The routing service exposes OpenAI-compatible endpoints:
+The routing service exposes OpenAI-compatible endpoints on port 8000.
 
 ### `POST /v1/chat/completions`
-Standard chat completions endpoint. Request body must include `model` field:
+
+Standard chat completions. The `model` field in the request body selects the backend:
+
 ```json
 {
-  "model": "qwen/qwen3-1.7b",
-  "messages": [{"role": "user", "content": "Hello!"}]
+  "model": "qwen/qwen3-4b-2507",
+  "messages": [{"role": "user", "content": "Hello"}]
 }
 ```
 
+The router also injects `chat_template_kwargs` from config into the request body if set and not already present.
+
 ### `POST /v1/responses`
-Responses API endpoint with automatic fallback. If the backend doesn't support `/v1/responses` (returns 404), the router automatically converts the request to `/v1/chat/completions` format. This provides compatibility with MLX and llama.cpp backends while maintaining LM Studio compatibility.
+
+Responses API with automatic fallback. The router first tries `/v1/responses` on the backend. If the backend returns 404 or 422, it converts the request to `/v1/chat/completions` format and retries.
 
 ### `POST /v1/embeddings`
-OpenAI-compatible embeddings. The router resolves `model` the same way as chat completions and forwards to the backend’s `/v1/embeddings`.
 
-**GGUF text embedding models (llama.cpp):** In `config/models.yaml`, set `backend: llamacpp`, `model_type: embeddings`, and `model_path` to your `.gguf` file or a directory containing a single `.gguf`. The launcher adds native `llama-server --embedding` or `python -m llama_cpp.server --embedding true` as appropriate.
+OpenAI-compatible embeddings. Requires a model with `model_type: embeddings` and `backend: llamacpp`. The backend is started with `--embedding` (native `llama-server`) or `--embedding true` (Python server).
 
-Example request:
 ```json
 {
   "model": "Qwen/Qwen3-Embedding-0.6B",
@@ -148,117 +144,94 @@ Example request:
 }
 ```
 
-Example:
 ```bash
 curl -s http://localhost:8000/v1/embeddings \
   -H "Content-Type: application/json" \
   -d '{"model":"Qwen/Qwen3-Embedding-0.6B","input":"test"}' | jq
 ```
 
-**MLX:** You can also run embedding models with `backend: mlx` and `model_type: embeddings` (via `mlx-openai-server`); use a non-GGUF MLX model path or Hugging Face id.
+MLX embedding models are also supported: set `backend: mlx` and `model_type: embeddings`.
 
 ### `POST /v1/rerank`
-Reranking API (llama.cpp). The router resolves `model` like other routes and forwards to the backend’s `/v1/rerank`.
 
-**llama.cpp only:** Set `backend: llamacpp`, `model_type: rerank`, and a local GGUF path. Startup uses **native `llama-server`** with `--embedding`, `--pooling rank`, and `--reranking`. `llama-server` must be on your PATH (for example `brew install llama.cpp`). The Python `llama_cpp.server` path is not used for rerank.
+Reranking. Requires `model_type: rerank`, `backend: llamacpp`, and native `llama-server` on PATH. The backend is started with `--embedding --pooling rank --reranking`. The Python `llama_cpp.server` does not support rerank.
 
-Request shape follows [llama.cpp server](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md) (query + documents). **MLX / `mlx-openai-server` does not support rerank** in this project.
+Request body follows the [llama.cpp server rerank format](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md) (query + documents).
 
 ### `GET /v1/models`
-List all available models and their configurations (includes `model_type`, e.g. `embeddings`, `rerank`, or `lm`).
+
+Lists all configured models and their settings (id, backend, port, model_type, context_length, quantization, supports_function_calling).
 
 ### `GET /v1/backends/health`
-Check health status of all configured backend servers. Returns status for each model:
-- `healthy`: Backend responding normally
-- `unreachable`: Backend not running (connection refused)
-- `timeout`: Backend not responding
-- `disabled`: Model disabled in config
 
-Example response:
+Health status of all configured backends:
+
 ```json
 {
-  "router": {
-    "status": "healthy",
-    "model_id": "qwen/qwen3-1.7b",
-    "backend": "mlx",
-    "port": 8500
-  },
   "standard": {
+    "status": "healthy",
+    "model_id": "qwen/qwen3-4b-2507",
+    "backend": "mlx",
+    "port": 8501
+  },
+  "reasoning": {
     "status": "unreachable",
     "error": "Connection refused - backend not running"
   }
 }
 ```
 
+Possible statuses: `healthy`, `unreachable`, `timeout`, `unhealthy`, `error`, `disabled`.
+
 ### `GET /health`
-Health check endpoint for the router itself.
 
-## How It Works
+Router health check.
 
-1. **Client sends request** to `http://localhost:8000/v1/chat/completions` with model ID in body
-2. **Routing service** (port 8000) extracts `model` field from JSON body
-3. **Router** looks up model in `config/models.yaml` to find backend and port
-4. **Router** forwards request to correct backend server (e.g., `http://localhost:8500/v1/chat/completions`)
-5. **Backend** processes request and returns response
-6. **Router** forwards response back to client
+## Backend Details
 
-## Port Management
+### MLX
 
-Each model **must** have its own unique port. The router uses the port from `config/models.yaml` to route requests. Example:
-
-- `router` model → port 8500 (MLX)
-- `standard` model → port 8501 (MLX)
-- `reasoning` model → port 8502 (MLX)
-- `coding` model → port 8503 (MLX)
-
-The routing service runs on port 8000.
-
-## Backend Requirements
-
-### MLX (Recommended for Apple Silicon)
 - Install: `uv sync --extra mlx`
-- Requires: `mlx-openai-server` command
-- Supports Hugging Face model IDs (auto-downloads) or local model paths
-- **Optimized for Apple Silicon** - Uses Metal Performance Shaders for GPU acceleration
-- Best performance on M1/M2/M3 Macs
+- Requires `mlx-openai-server` command (installed via the extra)
+- Accepts Hugging Face model IDs (auto-downloads) or local model directories
+- Apple Silicon only
 
 ### llama.cpp
-- Install: `uv sync --extra llamacpp`
-- Requires: `llama-cpp-python[server]` package
-- Supports Hugging Face model IDs (auto-downloads) or local `.gguf` files
-- Cross-platform support
+
+- Install: `uv sync --extra llamacpp` (installs `llama-cpp-python[server]` as fallback)
+- **Native `llama-server`** (e.g. `brew install llama.cpp`) is used automatically when found on PATH and is required for:
+  - `model_type: rerank`
+  - Models with newer architectures (Qwen3.5, etc.) not yet supported by the PyPI build
+  - `kv_unified` and `fit` flags
+- When native `llama-server` is not found, falls back to `python -m llama_cpp.server`
+- Requires local `.gguf` files — Hugging Face model IDs are not supported
 
 ## Troubleshooting
 
-### Check Backend Health
-First, check if all backends are running:
+### Check backend health
 ```bash
 curl http://localhost:8000/v1/backends/health | jq
 ```
 
-This will show the status of each backend server and help identify issues.
-
 ### Model not found
-- Check that model ID in request matches `id` field in `config/models.yaml`
-- Verify model file exists at the specified path, or use a Hugging Face model ID for auto-download
-- Check config validation warnings on startup
-- For Hugging Face models, ensure you have internet access for the first download
+- Verify the `id` in `config/models.yaml` matches the `model` field in your request exactly
+- Check that `enabled` is not set to `false`
 
 ### Port already in use
-- Each model needs a unique port
-- Check what's using the port: `lsof -i :8500`
-- Change port in `config/models.yaml`
-- Config validation will warn about port conflicts on startup
+```bash
+lsof -i :8501
+```
+Each model must have a unique port. Config validation warns about port conflicts on startup.
 
-### Backend server not starting
-- Check `/v1/backends/health` endpoint to see which backends are down
-- Verify backend dependencies installed: `uv sync --extra mlx` or `uv sync --extra llamacpp`
-- Check logs for error messages
+### Backend not starting
+- Check `/v1/backends/health` to see which backends are down
 - Ensure model paths are correct and files exist
-- For Hugging Face models, ensure you have internet access and sufficient disk space
+- For llamacpp: verify `llama-server` is on PATH (`which llama-server`)
+- Check logs for error messages
 
-### Connection refused / Backend unreachable
-- Backend server may not be running
-- Check `/v1/backends/health` to verify backend status
-- Restart backend servers: `uv run python -m slm_server backends`
-- Verify firewall isn't blocking local connections
+### "unknown model architecture" error (llamacpp)
+The PyPI build of `llama-cpp-python` may not support newer model architectures. Install native `llama-server`:
+```bash
+brew install llama.cpp
+```
+The server detects it on PATH and uses it automatically.

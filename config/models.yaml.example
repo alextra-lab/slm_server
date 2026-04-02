@@ -1,110 +1,112 @@
 # Model configuration for SLM Server
 #
-# Copy this file to models.yaml and update the model_path values with your actual paths.
-# Example: cp config/models.yaml.example config/models.yaml
+# Copy this file to models.yaml and update model_path values.
+#   cp config/models.yaml.example config/models.yaml
 #
-# Each model defines:
-# - id: Model identifier (used for routing requests)
-# - backend: Backend type (mlx or llamacpp)
-# - port: Port number for this model's server instance
-# - model_type: Type of model (lm, multimodal, image-generation, image-edit, embeddings, rerank, whisper). Default: lm (rerank: llamacpp + native llama-server only)
-# - context_length: Maximum context length. Default: None (uses model's default)
-# - quantization: Quantization level
-# - max_concurrency: Maximum concurrent requests. Default: 1
-# - host: Host to run the server on. Default: 0.0.0.0
-# - default_timeout: Default timeout in seconds
-# - enable_auto_tool_choice: Enable automatic tool choice (lm/multimodal only). Default: false
-# - tool_call_parser: Tool call parser (qwen3, glm4_moe, qwen3_coder, qwen3_moe, qwen3_next, qwen3_vl, harmony, minimax_m2). Default: None
-# - reasoning_parser: Reasoning parser (qwen3, glm4_moe, qwen3_moe, qwen3_next, qwen3_vl, harmony, minimax_m2). Default: None
-# - config_name: Model config name (for image-generation/image-edit). Default: flux-schnell for image-generation, flux-kontext-dev for image-edit
-# - model_path: Hugging Face model ID (e.g., "mlx-community/LFM2.5-1.2B-Instruct-8bit") 
-#              or local path to model directory/file (required)
-# - enabled: Whether this model should be started (default: true)
+# Fields (all models):
+#   id               – Model identifier; must match the "model" field in API requests.
+#   backend          – "mlx" or "llamacpp"
+#   port             – Port for this model's backend server (must be unique per model).
+#   model_path       – Hugging Face model ID (MLX only, auto-downloaded) or local path to
+#                      model directory or .gguf file (required for llamacpp).
+#   default_timeout  – Request timeout in seconds.
+#   quantization     – Quantization level (e.g. "8bit", "Q8_0", "f16"). Informational for
+#                      MLX; affects KV cache defaults for llamacpp.
+#   model_type       – "lm" (default), "multimodal", "image-generation", "image-edit",
+#                      "embeddings", "rerank", or "whisper".
+#                      rerank: llamacpp + native llama-server only.
+#   context_length   – Maximum context length. Omit to use the model's built-in default.
+#   max_concurrency  – Maximum concurrent requests. Default: 1.
+#   host             – Host the backend server binds to. Default: 0.0.0.0.
+#   enabled          – Set to false to skip this model on startup. Default: true.
+#   supports_function_calling – Reported in /v1/models response. Default: false.
+#
+# MLX-only fields (passed to mlx-openai-server launch):
+#   enable_auto_tool_choice – Pass --enable-auto-tool-choice. Default: false.
+#   tool_call_parser  – Tool call parser: qwen3, glm4_moe, qwen3_coder, qwen3_moe,
+#                       qwen3_next, qwen3_vl, harmony, minimax_m2.
+#   reasoning_parser  – Reasoning parser: qwen3, glm4_moe, qwen3_moe, qwen3_next,
+#                       qwen3_vl, harmony, minimax_m2.
+#   config_name       – For image-generation/image-edit: flux-schnell or flux-kontext-dev.
+#
+# llama.cpp-only fields:
+#   chat_template_kwargs – Dict for --chat-template-kwargs (e.g. {enable_thinking: true}).
+#   temp / top_p / top_k / min_p – Sampling parameters.
+#   cache_type_k / cache_type_v  – KV cache type, e.g. "q8_0" or "f16".
+#   flash_attn  – Flash attention on/off (true/false).
+#   kv_unified  – Unified KV cache. Native llama-server only.
+#   fit         – --fit flag. Native llama-server only.
 
 models:
-  router:
-    id: "liquid/lfm2.5-1.2b"
-    backend: "mlx"
-    port: 8500
-    context_length: 32768
-    quantization: "8bit"
-    max_concurrency: 4
-    default_timeout: 10
-    supports_function_calling: false  # Router doesn't need tool calling
-    model_path: "mlx-community/LFM2.5-1.2B-Instruct-8bit"  # Hugging Face model ID (auto-downloads)
-    # Or use local path: "~/.cache/huggingface/hub/models--mlx-community--LFM2.5-1.2B-Instruct-8bit"
 
+  # --- MLX language model example ---
   standard:
     id: "qwen/qwen3-4b-2507"
     backend: "mlx"
     port: 8501
-    model_type: "lm"  # lm, multimodal, image-generation, image-edit, embeddings, rerank, whisper
-    context_length: 40960  # Optional: None uses model's default
+    context_length: 40960
     quantization: "8bit"
-    max_concurrency: 2  # Default: 1
-    host: "0.0.0.0"  # Default: 0.0.0.0
+    max_concurrency: 2
     default_timeout: 45
-    enable_auto_tool_choice: true  # Enable automatic tool choice (lm/multimodal only)
-    supports_function_calling: true  # Enable tool calling for the standard model
-    tool_call_parser: "qwen3"        # Use qwen3 parser for Qwen models
-    reasoning_parser: "qwen3"        # Optional: reasoning parser for Qwen models
-    model_path: "mlx-community/Qwen3-4b-Instruct-2507-MLX-8bit"  # Hugging Face model ID (auto-downloads)
-    # Or use local path: "~/.cache/huggingface/hub/models--mlx-community--Qwen3-4b-Instruct-2507-MLX-8bit"
-
-  reasoning:
-    id: "qwen/qwen3-8b"
-    backend: "mlx"
-    port: 8502
-    model_type: "lm"  # lm, multimodal, image-generation, image-edit, embeddings, rerank, whisper
-    context_length: 65536  # Optional: None uses model's default
-    quantization: "8bit"
-    max_concurrency: 2  # Default: 1
-    host: "0.0.0.0"  # Default: 0.0.0.0
-    default_timeout: 60
-    enable_auto_tool_choice: true  # Enable automatic tool choice (lm/multimodal only)
     supports_function_calling: true
-    tool_call_parser: "qwen3"        # Use qwen3 parser for Qwen models
-    reasoning_parser: "qwen3"        # Optional: reasoning parser for Qwen models
-    model_path: "mlx-community/Qwen3-8B-MLX-8bit"  # Hugging Face model ID (auto-downloads)
-    # Or use local path: "~/.cache/huggingface/hub/models--mlx-community--Qwen3-8B-MLX-8bit"
+    enable_auto_tool_choice: true
+    tool_call_parser: "qwen3"
+    reasoning_parser: "qwen3"
+    model_path: "mlx-community/Qwen3-4b-Instruct-2507-MLX-8bit"  # HF model ID (auto-downloaded)
 
-  # Text embeddings (GGUF): use backend llamacpp + model_type embeddings (llama-server --embedding)
+  # --- llama.cpp language model example (GGUF, native llama-server) ---
+  reasoning:
+    id: "unsloth/qwen3.5-9b"
+    backend: "llamacpp"
+    port: 8502
+    model_type: "lm"
+    context_length: 16384
+    quantization: "UD-Q8_K_XL"
+    max_concurrency: 1
+    default_timeout: 120
+    supports_function_calling: true
+    enable_auto_tool_choice: true
+    tool_call_parser: "qwen3"
+    reasoning_parser: "qwen3"
+    chat_template_kwargs: {"enable_thinking": false}
+    cache_type_k: "q8_0"
+    cache_type_v: "q8_0"
+    kv_unified: true
+    flash_attn: true
+    model_path: "/path/to/Qwen3.5-9B-GGUF"  # directory with .gguf or direct path to .gguf
+
+  # --- Text embeddings (GGUF): llamacpp + model_type embeddings ---
   embeddings:
     id: "Qwen/Qwen3-Embedding-0.6B"
     backend: "llamacpp"
-    port: 8504
+    port: 8503
     model_type: "embeddings"
     context_length: 32768
     quantization: "f16"
     max_concurrency: 1
-    host: "0.0.0.0"
     default_timeout: 60
-    supports_function_calling: false
-    model_path: "/path/to/Qwen3-Embedding-0.6B-GGUF"  # directory with .gguf or path to .gguf
+    model_path: "/path/to/Qwen3-Embedding-0.6B-GGUF"  # directory with .gguf or direct path to .gguf
 
-  # Reranker (GGUF): llamacpp only; requires native llama-server on PATH (--embedding --pooling rank --reranking)
+  # --- Reranker (GGUF): llamacpp + native llama-server required ---
   rerank:
     id: "ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF"
     backend: "llamacpp"
-    port: 8506
+    port: 8504
     model_type: "rerank"
     context_length: 8192
     quantization: "Q8_0"
     max_concurrency: 1
-    host: "0.0.0.0"
     default_timeout: 120
-    supports_function_calling: false
-    model_path: "/path/to/Qwen3-Reranker-0.6B-Q8_0-GGUF"  # directory with .gguf or path to .gguf
+    model_path: "/path/to/Qwen3-Reranker-0.6B-Q8_0-GGUF"  # directory with .gguf or direct path to .gguf
 
-  coding:
-    id: "mistralai/devstral-small-2-2512"
-    backend: "mlx"  # GGUF files require llamacpp backend
-    port: 8505
-    context_length: 32768
-    quantization: "8bit"
-    max_concurrency: 2
-    default_timeout: 45
-    supports_function_calling: false
-    enabled: true
-    model_path: "mistralai/Devstral-Small-2507-MLX-8bit"  # Hugging Face model ID (auto-downloads)
-    # Or use local path: "~/.cache/huggingface/hub/models--mistralai--Devstral-Small-2507-MLX-8bit"
+  # --- Additional MLX model example (disabled by default) ---
+  # coding:
+  #   id: "mistralai/devstral-small-2-2512"
+  #   backend: "mlx"
+  #   port: 8505
+  #   context_length: 32768
+  #   quantization: "8bit"
+  #   max_concurrency: 2
+  #   default_timeout: 45
+  #   model_path: "mistralai/Devstral-Small-2507-MLX-8bit"
+  #   enabled: false

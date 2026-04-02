@@ -1,246 +1,169 @@
 # Setup Guide
 
-Complete guide for setting up SLM Server for the first time.
-
 ## Prerequisites
 
-- **macOS with Apple Silicon** (M1, M2, M3, or later) - Recommended for MLX backend
-- **Python 3.12+** - Required for the project
-- **uv** - Fast Python package installer ([install uv](https://github.com/astral-sh/uv))
+- macOS with Apple Silicon (M1, M2, M3, M4) — required for MLX; llama.cpp works cross-platform
+- Python 3.12+
+- [uv](https://github.com/astral-sh/uv)
 
-> **Note:** While the llama.cpp backend works cross-platform, the MLX backend (recommended) requires Apple Silicon for optimal performance. This project is primarily designed for Apple Silicon Macs.
-
-## Initial Setup
-
-### 1. Clone the Repository
+## 1. Clone the Repository
 
 ```bash
 git clone <repository-url>
 cd slm_server
 ```
 
-### 2. Install Dependencies
+## 2. Install Dependencies
 
 ```bash
 # Install core dependencies
 uv sync
 
 # Install backend dependencies (choose what you need)
-uv sync --extra mlx        # For MLX backend (Apple Silicon optimized)
-uv sync --extra llamacpp   # For llama.cpp backend
+uv sync --extra mlx        # MLX backend (Apple Silicon)
+uv sync --extra llamacpp   # llama.cpp Python server (fallback)
 ```
 
-**Qwen3.5 / Unsloth GGUF (llama.cpp):** The server **prefers the native `llama-server` binary** when it’s on your PATH (e.g. from `brew install llama.cpp`). If you have it installed, the server will use it automatically and you get full Qwen3.5 support and `--chat-template-kwargs` without building anything else.
+### llama.cpp: native server vs Python package
 
-If you don’t use the native binary, the PyPI build of `llama-cpp-python` may ship an older llama.cpp that does not support the `qwen35` / `qwen35moe` architectures. If you see:
+The server **prefers the native `llama-server` binary** when it is on your PATH. Install it with:
 
-```text
+```bash
+brew install llama.cpp
+```
+
+The native binary is required for:
+- `model_type: rerank`
+- Models with newer architectures (e.g. Qwen3.5) not yet supported by the PyPI build of `llama-cpp-python`
+- `kv_unified` and `fit` config flags
+
+If you see an error like:
+
+```
 unknown model architecture: 'qwen35'
-unknown model architecture: 'qwen35moe'
 ```
 
-either install the native server (`brew install llama.cpp`) so the server uses it, or install `llama-cpp-python` from source so it builds against the latest llama.cpp. From the project root, in the same env you use for the server:
+install the native server so the server can use it automatically, or build `llama-cpp-python` from source:
 
 ```bash
 # Apple Silicon (Metal); use -DGGML_CUDA=on for NVIDIA
 CMAKE_ARGS="-DGGML_METAL=on" uv pip install "llama-cpp-python[server] @ git+https://github.com/abetlen/llama-cpp-python.git@main" --no-cache-dir --reinstall
 ```
 
-Or with pip:
+Then run `uv sync --extra llamacpp` to keep the rest of the project in sync.
+
+## 3. Configure Models
 
 ```bash
-CMAKE_ARGS="-DGGML_METAL=on" pip install "llama-cpp-python[server] @ git+https://github.com/abetlen/llama-cpp-python.git@main" --no-cache-dir --force-reinstall
-```
-
-Then run `uv sync --extra llamacpp` again so the rest of the project stays in sync. After that, the Qwen3.5/Unsloth GGUF models should load.
-
-### 3. Set Up Configuration Files
-
-The project includes template files that you need to copy and customize:
-
-```bash
-# Copy configuration template
 cp config/models.yaml.example config/models.yaml
 ```
 
-### 4. Configure Models
+Edit `config/models.yaml` with your model paths and settings. See the [README](README.md) for a full description of all configuration fields.
 
-Edit `config/models.yaml` with your model paths and settings:
+### Example entry
 
 ```yaml
 models:
-  router:
-    id: "liquid/lfm2.5-1.2b"
+  standard:
+    id: "qwen/qwen3-4b-2507"
     backend: "mlx"
-    port: 8500
-    context_length: 32768
+    port: 8501
+    context_length: 40960
     quantization: "8bit"
-    max_concurrency: 4
-    default_timeout: 10
-    supports_function_calling: false
-    model_path: "mlx-community/LFM2.5-1.2B-Instruct-8bit"  # Hugging Face model ID
+    max_concurrency: 2
+    default_timeout: 45
+    enable_auto_tool_choice: true
+    tool_call_parser: "qwen3"
+    reasoning_parser: "qwen3"
+    model_path: "mlx-community/Qwen3-4b-Instruct-2507-MLX-8bit"
 ```
 
-**Model Path Options:**
+### Model path formats
 
-1. **Hugging Face model ID** (recommended): Automatically downloads on first use
-   ```yaml
-   model_path: "mlx-community/LFM2.5-1.2B-Instruct-8bit"
-   ```
+- **Hugging Face model ID** (MLX only): downloaded automatically on first use
+  ```yaml
+  model_path: "mlx-community/Qwen3-4b-Instruct-2507-MLX-8bit"
+  ```
 
-2. **Local file path**: Use full path to your model directory
-   ```yaml
-   model_path: "~/.cache/huggingface/hub/models--mlx-community--LFM2.5-1.2B-Instruct-8bit"
-   # Or any local directory containing the model
-   ```
+- **Local path**: directory or file
+  ```yaml
+  model_path: "/path/to/models/Qwen3.5-9B-GGUF"
+  ```
 
-**Important Configuration Fields:**
+For llamacpp with a directory, the server picks the first `.gguf` file found. Hugging Face IDs are not supported for llamacpp.
 
-- `id`: Model identifier used for routing (must match request body)
-- `backend`: `mlx` or `llamacpp`
-- `port`: Unique port number for this model (default: 8500-8503)
-- `model_path`: Path to model or Hugging Face model ID
-- `context_length`: Maximum context length (optional)
-- `quantization`: Quantization level (`4bit`, `8bit`, etc.)
-- `max_concurrency`: Maximum concurrent requests
-- `default_timeout`: Request timeout in seconds
+## 4. Start the Server
 
-### 5. Download Models
-
-**Option A: Using Hugging Face Model IDs (Recommended)**
-
-The easiest way is to use Hugging Face model IDs - models are automatically downloaded on first use:
-
-1. Use a Hugging Face model ID in `model_path`:
-   ```yaml
-   model_path: "mlx-community/LFM2.5-1.2B-Instruct-8bit"
-   ```
-2. The model will be automatically downloaded on first use to `~/.cache/huggingface/hub/`
-3. Ensure you have internet access and sufficient disk space
-
-**Option B: Manual Download from Hugging Face**
-
-1. Download models manually from [Hugging Face](https://huggingface.co/)
-2. Place them in a directory (e.g., `~/.cache/huggingface/hub/` or a custom location)
-3. Use the full path in `config/models.yaml`:
-   ```yaml
-   model_path: "~/.cache/huggingface/hub/models--mlx-community--LFM2.5-1.2B-Instruct-8bit"
-   ```
-
-**Note:** The server works with any local model directory. You can download models from Hugging Face or use any other method to obtain model files.
-
-### 6. Start the Server
-
-**Option 1: Using the start script (Recommended)**
+**Using the start script:**
 
 ```bash
 ./start.sh
 ```
 
-This script:
-- Starts all backend model servers
-- Starts the routing service
-- Verifies all services are running
-- Handles cleanup on exit
+This starts all enabled backend servers, waits for them to bind to their ports, then starts the routing service on port 8000.
 
-**Option 2: Manual startup**
+**Manual startup:**
 
 ```bash
-# Terminal 1: Start backend servers
+# Terminal 1: backend servers
 uv run python -m slm_server backends
 
-# Terminal 2: Start routing service
+# Terminal 2: routing service
 uv run python -m slm_server router
 ```
 
-### 7. Verify Installation
-
-Check that all services are running:
+## 5. Verify
 
 ```bash
-# Check router health
+# Router health
 curl http://localhost:8000/health
 
-# Check backend health
+# Backend health
 curl http://localhost:8000/v1/backends/health | jq
 
-# List available models
+# List configured models
 curl http://localhost:8000/v1/models | jq
+
+# Test a request
+curl http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "qwen/qwen3-4b-2507", "messages": [{"role": "user", "content": "Hello"}]}'
 ```
 
 ## Environment Variables
 
-You can customize behavior with environment variables:
-
-- `MODEL_CACHE`: Override default model cache path for benchmark tool (default: `~/.cache/huggingface/hub`)
-
-Example:
-```bash
-export MODEL_CACHE="/custom/path/to/models"
-uv run python -m slm_server.benchmark_models check --backend mlx
-```
+- `MODEL_CACHE`: Override the default model cache path for the benchmark tool (default: `~/.cache/huggingface/hub`)
 
 ## Troubleshooting
 
-### Models Not Found
+### Models not found
 
-1. Verify model paths in `config/models.yaml` are correct
-2. Check that model files exist at the specified paths
-3. For Hugging Face models:
-   - Ensure you have internet access for the first download
-   - Check `~/.cache/huggingface/hub/` after download
-   - Verify sufficient disk space
-4. Review config validation warnings on startup
+- Verify `model_path` in `config/models.yaml` is correct
+- For HF model IDs (MLX): ensure internet access on first run
+- Config validation warnings are printed on startup
 
-### Port Conflicts
+### Port conflicts
 
-1. Check which ports are in use:
-   ```bash
-   lsof -i :8500
-   ```
-2. Change port numbers in `config/models.yaml`
-3. Ensure each model has a unique port
+```bash
+lsof -i :8501
+```
 
-### Backend Not Starting
+Each model needs a unique port. Change port numbers in `config/models.yaml`.
 
-**"unknown model architecture: 'qwen35' or 'qwen35moe'"** — Use the native `llama-server` binary (e.g. `brew install llama.cpp`) so the server picks it up automatically, or install `llama-cpp-python` from source as in the **Qwen3.5 / Unsloth GGUF** step under "Install Dependencies" above.
+### Backend not starting
 
-1. Check backend health:
-   ```bash
-   curl http://localhost:8000/v1/backends/health | jq
-   ```
-2. Verify backend dependencies are installed:
-   ```bash
-   uv sync --extra mlx        # For MLX
-   uv sync --extra llamacpp   # For llama.cpp
-   ```
-3. Check logs for error messages
-4. Ensure model paths are correct and files exist
+```bash
+curl http://localhost:8000/v1/backends/health | jq
+```
 
-### Configuration Validation Errors
+- Verify `llama-server` is on PATH for llamacpp models: `which llama-server`
+- Check that model files exist at the configured paths
+- Review startup logs for error messages
 
-The server validates configuration on startup and will warn about:
+### Configuration validation errors
+
+The server validates config on startup and warns about:
 - Missing model paths
-- Backend/format mismatches (e.g., MLX with GGUF files)
+- Backend/format mismatches (e.g. MLX with GGUF files)
 - Port conflicts
-
-Review the warnings and fix the issues in `config/models.yaml`.
-
-## Next Steps
-
-- Read the [README.md](README.md) for API documentation
-- Check [docs/PORT_AND_ROUTING.md](docs/PORT_AND_ROUTING.md) for routing details
-- Test the API with a simple request:
-  ```bash
-  curl http://localhost:8000/v1/chat/completions \
-    -H "Content-Type: application/json" \
-    -d '{"model": "liquid/lfm2.5-1.2b", "messages": [{"role": "user", "content": "Hello!"}]}'
-  ```
-
-## Getting Help
-
-If you encounter issues:
-1. Check the troubleshooting section above
-2. Review the `/v1/backends/health` endpoint for backend status
-3. Check server logs for detailed error messages
-4. Verify your configuration matches the examples in `config/models.yaml.example`
+- Invalid options for the selected model type (e.g. `tool_call_parser` on an `embeddings` model)
