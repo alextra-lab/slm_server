@@ -32,11 +32,12 @@ dev = [
     "pytest-asyncio>=0.23.0",
     "ruff>=0.6.0",
     "mypy>=1.11.0",
+    "types-PyYAML>=6.0.0",
 ]
 
 # Backend inference servers (install only what you need)
 mlx = [
-    "mlx-openai-server>=1.5.1",
+    "mlx-openai-server>=1.7.1",
 ]
 
 llamacpp = [
@@ -44,7 +45,7 @@ llamacpp = [
 ]
 
 [tool.uv]
-# mlx-openai-server 1.5.1 → mlx-lm → transformers 5.0.0rc3 (prerelease)
+# MLX stack still pulls prerelease pins transitively in some versions
 prerelease = "allow"
 constraint-dependencies = [
     "requests>=2.33.0",   # GHSA-gc5v-m9x4-r6x2 (transitive via outlines / mlx stack)
@@ -60,7 +61,7 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
-ignore = []
+ignore = ["E501"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

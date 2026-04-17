@@ -26,7 +26,7 @@ Performance parameters configured:
 Usage:
     # Using uv (recommended):
     uv run python -m slm_server.benchmark_models --backend mlx --model router
-    
+
     # Or with activated virtual environment:
     source .venv/bin/activate
     python -m slm_server.benchmark_models --backend mlx --model router
@@ -67,9 +67,7 @@ console = Console()
 log = structlog.get_logger(__name__)
 
 # Model cache path - can be overridden with MODEL_CACHE environment variable
-MODEL_CACHE = Path(
-    os.getenv("MODEL_CACHE", str(Path.home() / ".cache" / "huggingface" / "hub"))
-)
+MODEL_CACHE = Path(os.getenv("MODEL_CACHE", str(Path.home() / ".cache" / "huggingface" / "hub")))
 
 
 def start_model_server(
@@ -184,7 +182,7 @@ def start_model_server(
 
     # At this point, cmd is guaranteed to be list[str] (not None)
     # because all branches either set cmd or return early
-    
+
     console.print(f"[green]Starting {backend} server with OpenAI-compatible API...[/green]")
     console.print(f"  Command: {' '.join(cmd)}")
     console.print(f"  Base URL: http://localhost:{port}/v1")
@@ -289,11 +287,11 @@ def start(
             sys.exit(1)
 
         model_def = config.models[model]
-        
+
         # Use port from config if not provided
         if port is None:
             port = model_def.port
-        
+
         # Verify backend matches
         if model_def.backend != backend:
             console.print(
@@ -313,9 +311,7 @@ def start(
                 console.print(
                     f"[red]Model file not found for {model_def.id} with backend {backend}[/red]"
                 )
-                console.print(
-                    "[yellow]Use --model-file to specify the path manually[/yellow]"
-                )
+                console.print("[yellow]Use --model-file to specify the path manually[/yellow]")
                 sys.exit(1)
             model_path = found_path
 
@@ -327,9 +323,7 @@ def start(
 
         console.print(f"[green]Server started (PID: {process.pid})[/green]")
         console.print(f"[cyan]OpenAI-compatible endpoint: http://localhost:{port}/v1[/cyan]")
-        console.print(
-            f"[cyan]For models.yaml, use endpoint: http://localhost:{port}/v1[/cyan]"
-        )
+        console.print(f"[cyan]For models.yaml, use endpoint: http://localhost:{port}/v1[/cyan]")
         console.print("[yellow]Press Ctrl+C to stop[/yellow]")
 
         # Wait for process

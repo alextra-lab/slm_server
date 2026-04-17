@@ -1,6 +1,7 @@
 """FastAPI routing service that routes requests to backend model servers based on model ID."""
 
 from contextlib import asynccontextmanager
+from typing import Any
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
@@ -61,8 +62,7 @@ def _get_model_definition(model_id: str, config: ModelConfig) -> ModelDefinition
     raise HTTPException(
         status_code=404,
         detail=(
-            f"Model '{model_id}' not found in configuration. "
-            f"Available models: {available_models}"
+            f"Model '{model_id}' not found in configuration. Available models: {available_models}"
         ),
     )
 
@@ -88,11 +88,7 @@ def _filtered_forward_headers(request: Request) -> dict[str, str]:
         "connection",
         "transfer-encoding",
     }
-    return {
-        k: v
-        for k, v in request.headers.items()
-        if k.lower() not in skip
-    }
+    return {k: v for k, v in request.headers.items() if k.lower() not in skip}
 
 
 def _filter_response_headers(headers: httpx.Headers) -> dict[str, str]:
@@ -110,11 +106,7 @@ def _filter_response_headers(headers: httpx.Headers) -> dict[str, str]:
         "transfer-encoding",  # Will be recalculated
         "connection",  # Connection-specific, not relevant
     }
-    return {
-        k: v
-        for k, v in headers.items()
-        if k.lower() not in skip_headers
-    }
+    return {k: v for k, v in headers.items() if k.lower() not in skip_headers}
 
 
 def _convert_responses_to_chat(body: dict) -> dict:
@@ -123,7 +115,7 @@ def _convert_responses_to_chat(body: dict) -> dict:
     The responses API (LM Studio) uses 'input' field which can be:
     - A string (simple prompt)
     - A list of input items (for tool results, etc.)
-    
+
     We convert this to the chat/completions 'messages' format.
 
     Args:
@@ -133,11 +125,11 @@ def _convert_responses_to_chat(body: dict) -> dict:
         Request body in /v1/chat/completions format.
     """
     chat_body = body.copy()
-    
+
     # Handle 'input' field (LM Studio /v1/responses format)
     if "input" in body:
         input_value = body["input"]
-        
+
         if isinstance(input_value, str):
             # Simple string input -> single user message
             chat_body["messages"] = [{"role": "user", "content": input_value}]
@@ -149,40 +141,44 @@ def _convert_responses_to_chat(body: dict) -> dict:
                 if isinstance(item, dict):
                     item_type = item.get("type", "")
                     if item_type == "function_call_output":
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": item.get("call_id", ""),
-                            "content": item.get("output", ""),
-                        })
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": item.get("call_id", ""),
+                                "content": item.get("output", ""),
+                            }
+                        )
                     elif item_type == "message":
                         # Generic message item
-                        messages.append({
-                            "role": item.get("role", "user"),
-                            "content": item.get("content", ""),
-                        })
+                        messages.append(
+                            {
+                                "role": item.get("role", "user"),
+                                "content": item.get("content", ""),
+                            }
+                        )
             if messages:
                 chat_body["messages"] = messages
             else:
                 # Fallback: empty messages
                 chat_body["messages"] = [{"role": "user", "content": ""}]
-        
+
         del chat_body["input"]
-    
+
     # Handle 'prompt' field (alternative format)
     elif "prompt" in body:
         chat_body["messages"] = [{"role": "user", "content": body["prompt"]}]
         del chat_body["prompt"]
-    
+
     # Remove responses-specific fields that chat/completions doesn't understand
     fields_to_remove = ["previous_response_id", "reasoning"]
     for field in fields_to_remove:
         if field in chat_body:
             del chat_body[field]
-    
+
     # Ensure messages exists (fallback)
     if "messages" not in chat_body:
         chat_body["messages"] = [{"role": "user", "content": ""}]
-    
+
     return chat_body
 
 
@@ -219,7 +215,7 @@ def _build_error_response(
     Returns:
         JSONResponse with structured error data.
     """
-    content = {
+    content: dict[str, Any] = {
         "error": {
             "message": message,
             "type": error_type if status_code < 500 else "server_error",
@@ -266,22 +262,17 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
 
         # Inject chat_template_kwargs (e.g. enable_thinking for Unsloth Qwen3.5) so backend gets it per-request
         body_forward = dict(body)
-        if getattr(model_def, "chat_template_kwargs", None) and "chat_template_kwargs" not in body_forward:
+        if (
+            getattr(model_def, "chat_template_kwargs", None)
+            and "chat_template_kwargs" not in body_forward
+        ):
             body_forward["chat_template_kwargs"] = model_def.chat_template_kwargs
-        
+
         # Override timeout for this request based on model config
-        timeout = httpx.Timeout(
-            connect=10.0,
-            read=model_def.default_timeout,
-            write=30.0,
-            pool=10.0
-        )
-        
+        timeout = httpx.Timeout(connect=10.0, read=model_def.default_timeout, write=30.0, pool=10.0)
+
         response = await client.post(
-            backend_url,
-            json=body_forward,
-            headers=filtered_headers,
-            timeout=timeout
+            backend_url, json=body_forward, headers=filtered_headers, timeout=timeout
         )
 
         # Log error responses for debugging
@@ -323,21 +314,21 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
             error_detail = e.response.json()
         except Exception:
             error_detail = e.response.text[:500]
-        
+
         log.error(
             "backend_http_error",
             status_code=e.response.status_code,
             model_id=model_id if "model_id" in locals() else "unknown",
             error_detail=error_detail,
         )
-        
+
         return _build_error_response(
             status_code=e.response.status_code,
             message=f"Backend error: {error_detail}",
             model_id=model_id if "model_id" in locals() else None,
             backend_port=model_def.port if "model_def" in locals() else None,
         )
-    
+
     except httpx.ConnectError:
         log.error(
             "backend_unreachable",
@@ -350,7 +341,7 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
             model_id=model_id if "model_id" in locals() else None,
             backend_port=model_def.port if "model_def" in locals() else None,
         )
-    
+
     except httpx.TimeoutException:
         log.error(
             "backend_timeout",
@@ -363,10 +354,10 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
             model_id=model_id if "model_id" in locals() else None,
             backend_port=model_def.port if "model_def" in locals() else None,
         )
-    
+
     except HTTPException:
         raise  # Re-raise HTTP exceptions as-is
-    
+
     except Exception as e:
         log.error("routing_error", error=str(e), error_type=type(e).__name__)
         return _build_error_response(
@@ -602,7 +593,7 @@ async def rerank(request: Request) -> JSONResponse:
 @app.post("/v1/responses", response_model=None)
 async def responses(request: Request) -> JSONResponse | StreamingResponse:
     """Route responses API requests with automatic fallback to chat/completions.
-    
+
     This endpoint first tries /v1/responses on the backend. If the backend returns 404
     (endpoint not supported), it automatically converts the request to /v1/chat/completions
     format and retries. This provides compatibility with backends that don't support the
@@ -628,22 +619,14 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
 
         # Use shared HTTP client with connection pooling
         client = request.app.state.http_client
-        
+
         # Override timeout for this request
-        timeout = httpx.Timeout(
-            connect=10.0,
-            read=model_def.default_timeout,
-            write=30.0,
-            pool=10.0
-        )
+        timeout = httpx.Timeout(connect=10.0, read=model_def.default_timeout, write=30.0, pool=10.0)
 
         try:
             # Try /v1/responses first
             response = await client.post(
-                backend_url,
-                json=body,
-                headers=filtered_headers,
-                timeout=timeout
+                backend_url, json=body, headers=filtered_headers, timeout=timeout
             )
 
             # If successful (not 404/422), return response
@@ -665,6 +648,7 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
                     )
 
                 if response.headers.get("content-type", "").startswith("text/event-stream"):
+
                     async def stream_response():
                         async for chunk in response.aiter_bytes():
                             yield chunk
@@ -692,20 +676,20 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
             model_id=model_id,
             backend=model_def.backend,
             original_status=response.status_code if "response" in locals() else "exception",
-            message="/v1/responses not supported or invalid format, converting to /v1/chat/completions"
+            message="/v1/responses not supported or invalid format, converting to /v1/chat/completions",
         )
 
         # Convert request format
         chat_body = _convert_responses_to_chat(body)
-        if getattr(model_def, "chat_template_kwargs", None) and "chat_template_kwargs" not in chat_body:
+        if (
+            getattr(model_def, "chat_template_kwargs", None)
+            and "chat_template_kwargs" not in chat_body
+        ):
             chat_body["chat_template_kwargs"] = model_def.chat_template_kwargs
         fallback_url = _get_backend_url(model_def, "/v1/chat/completions")
 
         response = await client.post(
-            fallback_url,
-            json=chat_body,
-            headers=filtered_headers,
-            timeout=timeout
+            fallback_url, json=chat_body, headers=filtered_headers, timeout=timeout
         )
 
         if response.status_code >= 400:
@@ -723,6 +707,7 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
             )
 
         if response.headers.get("content-type", "").startswith("text/event-stream"):
+
             async def stream_response():
                 async for chunk in response.aiter_bytes():
                     yield chunk
@@ -747,21 +732,21 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
             error_detail = e.response.json()
         except Exception:
             error_detail = e.response.text[:500]
-        
+
         log.error(
             "backend_http_error",
             status_code=e.response.status_code,
             model_id=model_id if "model_id" in locals() else "unknown",
             error_detail=error_detail,
         )
-        
+
         return _build_error_response(
             status_code=e.response.status_code,
             message=f"Backend error: {error_detail}",
             model_id=model_id if "model_id" in locals() else None,
             backend_port=model_def.port if "model_def" in locals() else None,
         )
-    
+
     except httpx.ConnectError:
         log.error(
             "backend_unreachable",
@@ -774,7 +759,7 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
             model_id=model_id if "model_id" in locals() else None,
             backend_port=model_def.port if "model_def" in locals() else None,
         )
-    
+
     except httpx.TimeoutException:
         log.error(
             "backend_timeout",
@@ -787,10 +772,10 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
             model_id=model_id if "model_id" in locals() else None,
             backend_port=model_def.port if "model_def" in locals() else None,
         )
-    
+
     except HTTPException:
         raise  # Re-raise HTTP exceptions as-is
-    
+
     except Exception as e:
         log.error("routing_error", error=str(e), error_type=type(e).__name__)
         return _build_error_response(
@@ -826,7 +811,7 @@ async def list_models(request: Request) -> JSONResponse:
 @app.get("/v1/backends/health")
 async def backends_health(request: Request) -> JSONResponse:
     """Check health of all configured backends.
-    
+
     This endpoint queries the /health endpoint of each backend server to verify
     they are running and responsive. Useful for debugging startup issues and
     monitoring backend availability.

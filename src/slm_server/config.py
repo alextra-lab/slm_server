@@ -13,7 +13,9 @@ class ModelDefinition(BaseModel):
     backend: Literal["mlx", "llamacpp"] = Field(..., description="Backend type")
     port: int = Field(..., ge=1024, le=65535, description="Port number for this model server")
     context_length: int | None = Field(
-        None, ge=1, description="Maximum context length. Default: None (uses model's default context length)"
+        None,
+        ge=1,
+        description="Maximum context length. Default: None (uses model's default context length)",
     )
     quantization: str = Field(..., description="Quantization level")
     max_concurrency: int = Field(1, ge=1, description="Maximum concurrent requests (default: 1)")
@@ -21,24 +23,25 @@ class ModelDefinition(BaseModel):
     model_type: Literal[
         "lm", "multimodal", "image-generation", "image-edit", "embeddings", "rerank", "whisper"
     ] = Field(
-        "lm", description="Type of model to run (default: lm). rerank: llamacpp + native llama-server only."
+        "lm",
+        description="Type of model to run (default: lm). rerank: llamacpp + native llama-server only.",
     )
     host: str = Field("0.0.0.0", description="Host to run the server on (default: 0.0.0.0)")
     enable_auto_tool_choice: bool = Field(
         False,
-        description="Enable automatic tool choice. Only works with language models (lm or multimodal model types)."
+        description="Enable automatic tool choice. Only works with language models (lm or multimodal model types).",
     )
     tool_call_parser: str | None = Field(
         None,
-        description="Tool call parser for mlx-openai-server. Available options: qwen3, glm4_moe, qwen3_coder, qwen3_moe, qwen3_next, qwen3_vl, harmony, minimax_m2. Only works with language models (lm or multimodal model types)."
+        description="Tool call parser for mlx-openai-server. Available options: qwen3, glm4_moe, qwen3_coder, qwen3_moe, qwen3_next, qwen3_vl, harmony, minimax_m2. Only works with language models (lm or multimodal model types).",
     )
     reasoning_parser: str | None = Field(
         None,
-        description="Reasoning parser for mlx-openai-server. Available options: qwen3, glm4_moe, qwen3_moe, qwen3_next, qwen3_vl, harmony, minimax_m2. Only works with language models (lm or multimodal model types)."
+        description="Reasoning parser for mlx-openai-server. Available options: qwen3, glm4_moe, qwen3_moe, qwen3_next, qwen3_vl, harmony, minimax_m2. Only works with language models (lm or multimodal model types).",
     )
     config_name: str | None = Field(
         None,
-        description="Model configuration name. Default: flux-schnell for image-generation, flux-kontext-dev for image-edit"
+        description="Model configuration name. Default: flux-schnell for image-generation, flux-kontext-dev for image-edit",
     )
     supports_function_calling: bool = Field(
         False, description="Whether model supports native function calling via mlx-openai-server"
@@ -50,13 +53,28 @@ class ModelDefinition(BaseModel):
         description="Optional chat template kwargs for llama.cpp (e.g. enable_thinking for Qwen3.5). Only used when backend is llamacpp.",
     )
     # Optional llamacpp-only CLI options; only applied when present (no defaults in code).
-    temp: float | None = Field(None, description="Sampling temperature (llamacpp). Only used when backend is llamacpp.")
-    top_p: float | None = Field(None, description="Top-p sampling (llamacpp). Only used when backend is llamacpp.")
-    top_k: int | None = Field(None, description="Top-k sampling (llamacpp). Only used when backend is llamacpp.")
-    min_p: float | None = Field(None, description="Min-p sampling (llamacpp). Only used when backend is llamacpp.")
-    kv_unified: bool | None = Field(None, description="Use unified KV cache (llamacpp native). Only used when backend is llamacpp.")
-    cache_type_k: str | None = Field(None, description="KV cache type for K (e.g. q8_0). Only used when backend is llamacpp.")
-    cache_type_v: str | None = Field(None, description="KV cache type for V (e.g. q8_0). Only used when backend is llamacpp.")
+    temp: float | None = Field(
+        None, description="Sampling temperature (llamacpp). Only used when backend is llamacpp."
+    )
+    top_p: float | None = Field(
+        None, description="Top-p sampling (llamacpp). Only used when backend is llamacpp."
+    )
+    top_k: int | None = Field(
+        None, description="Top-k sampling (llamacpp). Only used when backend is llamacpp."
+    )
+    min_p: float | None = Field(
+        None, description="Min-p sampling (llamacpp). Only used when backend is llamacpp."
+    )
+    kv_unified: bool | None = Field(
+        None,
+        description="Use unified KV cache (llamacpp native). Only used when backend is llamacpp.",
+    )
+    cache_type_k: str | None = Field(
+        None, description="KV cache type for K (e.g. q8_0). Only used when backend is llamacpp."
+    )
+    cache_type_v: str | None = Field(
+        None, description="KV cache type for V (e.g. q8_0). Only used when backend is llamacpp."
+    )
     flash_attn: bool | str | None = Field(
         None,
         description="Flash attention on/off (llamacpp; true or 'on'). Only used when backend is llamacpp.",
@@ -65,7 +83,9 @@ class ModelDefinition(BaseModel):
         None,
         description="Fit option (llamacpp native; true or 'on'). Only used when backend is llamacpp.",
     )
-    model_path: str | None = Field(None, description="Optional path to model file (auto-discovered if not set)")
+    model_path: str | None = Field(
+        None, description="Optional path to model file (auto-discovered if not set)"
+    )
     enabled: bool = Field(True, description="Whether this model server should be started")
 
 
@@ -126,14 +146,14 @@ def validate_model_config(config: ModelConfig) -> list[str]:
 
         # Check if model_path is a Hugging Face model ID or local path
         is_hf_model = "/" in model_def.model_path and not model_def.model_path.startswith("/")
-        
+
         if is_hf_model:
             # It's a Hugging Face model ID - will be downloaded on first use
             # No validation needed
             continue
-        
+
         path = Path(model_def.model_path)
-        
+
         # Check if path exists (only for local paths)
         if not path.exists():
             issues.append(f"{role}: model_path does not exist: {path}")
@@ -150,17 +170,15 @@ def validate_model_config(config: ModelConfig) -> list[str]:
                         f"{role}: llamacpp backend requires .gguf file, but directory has no .gguf files: {path}"
                     )
             elif not str(path).lower().endswith(".gguf"):
-                issues.append(
-                    f"{role}: llamacpp backend requires .gguf file, got: {path}"
-                )
+                issues.append(f"{role}: llamacpp backend requires .gguf file, got: {path}")
 
         elif model_def.backend == "mlx":
             # MLX cannot use .gguf files
             if str(path).lower().endswith(".gguf"):
-                issues.append(
-                    f"{role}: mlx backend cannot use .gguf files: {path}"
-                )
-            elif path.is_file() and not any(ext in str(path).lower() for ext in [".mlx", ".safetensors"]):
+                issues.append(f"{role}: mlx backend cannot use .gguf files: {path}")
+            elif path.is_file() and not any(
+                ext in str(path).lower() for ext in [".mlx", ".safetensors"]
+            ):
                 issues.append(
                     f"{role}: mlx backend typically needs .mlx directory or safetensors files: {path}"
                 )

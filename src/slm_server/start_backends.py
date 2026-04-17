@@ -1,6 +1,5 @@
 """Script to start backend model servers based on config/models.yaml."""
 
-import asyncio
 import json
 import os
 import re
@@ -9,7 +8,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 import structlog
 from structlog import get_logger
@@ -22,50 +21,69 @@ BackendType = Literal["mlx", "llamacpp"]
 
 # Whitelist of allowed parser names to prevent injection
 ALLOWED_TOOL_CALL_PARSERS = {
-    "qwen3", "glm4_moe", "qwen3_coder", "qwen3_moe", "qwen3_next", "qwen3_vl", "harmony", "minimax_m2"
+    "qwen3",
+    "glm4_moe",
+    "qwen3_coder",
+    "qwen3_moe",
+    "qwen3_next",
+    "qwen3_vl",
+    "harmony",
+    "minimax_m2",
 }
 
 ALLOWED_REASONING_PARSERS = {
-    "qwen3", "glm4_moe", "qwen3_moe", "qwen3_next", "qwen3_vl", "harmony", "minimax_m2"
+    "qwen3",
+    "glm4_moe",
+    "qwen3_moe",
+    "qwen3_next",
+    "qwen3_vl",
+    "harmony",
+    "minimax_m2",
 }
 
 ALLOWED_MODEL_TYPES = {
-    "lm", "multimodal", "image-generation", "image-edit", "embeddings", "rerank", "whisper"
+    "lm",
+    "multimodal",
+    "image-generation",
+    "image-edit",
+    "embeddings",
+    "rerank",
+    "whisper",
 }
 
-ALLOWED_CONFIG_NAMES = {
-    "flux-schnell", "flux-kontext-dev"
-}
+ALLOWED_CONFIG_NAMES = {"flux-schnell", "flux-kontext-dev"}
 
 
 def validate_path(path: Path | str, allow_hf_model: bool = False) -> Path | str:
     """Validate and sanitize a file path to prevent path traversal attacks.
-    
+
     Args:
         path: Path to validate.
         allow_hf_model: If True, allow Hugging Face model IDs (format: "org/model").
-    
+
     Returns:
         Validated path.
-    
+
     Raises:
         ValueError: If path contains dangerous characters or path traversal sequences.
     """
     path_str = str(path)
-    
+
     # Allow Hugging Face model IDs (format: "org/model")
     if allow_hf_model and "/" in path_str and not path_str.startswith("/"):
         # Validate HF model ID format: alphanumeric, hyphens, underscores, and forward slashes only
-        if not re.match(r'^[a-zA-Z0-9._/-]+$', path_str):
+        if not re.match(r"^[a-zA-Z0-9._/-]+$", path_str):
             raise ValueError(f"Invalid Hugging Face model ID format: {path_str}")
         # Check for path traversal attempts even in HF IDs
         if ".." in path_str or path_str.startswith("/") or "//" in path_str:
-            raise ValueError(f"Invalid path: contains path traversal or invalid characters: {path_str}")
+            raise ValueError(
+                f"Invalid path: contains path traversal or invalid characters: {path_str}"
+            )
         return path_str
-    
+
     # For local paths, resolve to absolute path and validate
     path_obj = Path(path)
-    
+
     # Check for path traversal sequences
     if ".." in path_str or path_str.startswith("~"):
         # Resolve to absolute path to normalize
@@ -73,113 +91,124 @@ def validate_path(path: Path | str, allow_hf_model: bool = False) -> Path | str:
             path_obj = path_obj.resolve()
         except (OSError, RuntimeError) as e:
             raise ValueError(f"Invalid path: cannot resolve: {path_str}") from e
-    
+
     # Validate path doesn't contain null bytes or other dangerous characters
     if "\x00" in path_str:
         raise ValueError(f"Invalid path: contains null byte: {path_str}")
-    
+
     # Check for shell metacharacters that could be dangerous
     dangerous_chars = [";", "&", "|", "`", "$", "(", ")", "<", ">", "\n", "\r"]
     for char in dangerous_chars:
         if char in path_str:
             raise ValueError(f"Invalid path: contains dangerous character '{char}': {path_str}")
-    
+
     return path_obj
 
 
 def validate_host(host: str) -> str:
     """Validate host value to prevent injection attacks.
-    
+
     Args:
         host: Host value to validate.
-    
+
     Returns:
         Validated host string.
-    
+
     Raises:
         ValueError: If host contains invalid characters.
     """
     # Allow localhost, 0.0.0.0, and valid IP addresses
     if host in ("localhost", "0.0.0.0", "127.0.0.1"):
         return host
-    
+
     # Validate IP address format (basic check)
-    ip_pattern = r'^(\d{1,3}\.){3}\d{1,3}$'
+    ip_pattern = r"^(\d{1,3}\.){3}\d{1,3}$"
     if re.match(ip_pattern, host):
         # Validate each octet is 0-255
         parts = host.split(".")
         if all(0 <= int(part) <= 255 for part in parts):
             return host
-    
+
     # Validate hostname format (alphanumeric, hyphens, dots)
-    hostname_pattern = r'^[a-zA-Z0-9.-]+$'
+    hostname_pattern = r"^[a-zA-Z0-9.-]+$"
     if re.match(hostname_pattern, host):
         # Check for dangerous characters
-        if any(char in host for char in [";", "&", "|", "`", "$", "(", ")", "<", ">", "\n", "\r", "\x00", " "]):
+        if any(
+            char in host
+            for char in [";", "&", "|", "`", "$", "(", ")", "<", ">", "\n", "\r", "\x00", " "]
+        ):
             raise ValueError(f"Invalid host: contains dangerous characters: {host}")
         return host
-    
+
     raise ValueError(f"Invalid host format: {host}")
 
 
-def validate_parser_name(parser: str | None, allowed_parsers: set[str], parser_type: str) -> str | None:
+def validate_parser_name(
+    parser: str | None, allowed_parsers: set[str], parser_type: str
+) -> str | None:
     """Validate parser name against whitelist.
-    
+
     Args:
         parser: Parser name to validate.
         allowed_parsers: Set of allowed parser names.
         parser_type: Type of parser (for error messages).
-    
+
     Returns:
         Validated parser name or None.
-    
+
     Raises:
         ValueError: If parser name is not in whitelist.
     """
     if parser is None:
         return None
-    
+
     if parser not in allowed_parsers:
-        raise ValueError(f"Invalid {parser_type}: '{parser}'. Allowed values: {sorted(allowed_parsers)}")
-    
+        raise ValueError(
+            f"Invalid {parser_type}: '{parser}'. Allowed values: {sorted(allowed_parsers)}"
+        )
+
     return parser
 
 
 def validate_model_type(model_type: str) -> str:
     """Validate model type against whitelist.
-    
+
     Args:
         model_type: Model type to validate.
-    
+
     Returns:
         Validated model type.
-    
+
     Raises:
         ValueError: If model type is not in whitelist.
     """
     if model_type not in ALLOWED_MODEL_TYPES:
-        raise ValueError(f"Invalid model_type: '{model_type}'. Allowed values: {sorted(ALLOWED_MODEL_TYPES)}")
+        raise ValueError(
+            f"Invalid model_type: '{model_type}'. Allowed values: {sorted(ALLOWED_MODEL_TYPES)}"
+        )
     return model_type
 
 
 def validate_config_name(config_name: str | None) -> str | None:
     """Validate config name against whitelist or allow None.
-    
+
     Args:
         config_name: Config name to validate.
-    
+
     Returns:
         Validated config name or None.
-    
+
     Raises:
         ValueError: If config name is not in whitelist.
     """
     if config_name is None:
         return None
-    
+
     if config_name not in ALLOWED_CONFIG_NAMES:
-        raise ValueError(f"Invalid config_name: '{config_name}'. Allowed values: {sorted(ALLOWED_CONFIG_NAMES)}")
-    
+        raise ValueError(
+            f"Invalid config_name: '{config_name}'. Allowed values: {sorted(ALLOWED_CONFIG_NAMES)}"
+        )
+
     return config_name
 
 
@@ -234,7 +263,9 @@ def find_command_in_venv(command: str) -> str:
     Returns:
         Full path to command, or command name if not found.
     """
-    if hasattr(sys, "real_prefix") or (hasattr(sys, "base_prefix") and sys.base_prefix != sys.prefix):
+    if hasattr(sys, "real_prefix") or (
+        hasattr(sys, "base_prefix") and sys.base_prefix != sys.prefix
+    ):
         venv_bin = Path(sys.prefix) / "bin" / command
         if venv_bin.exists():
             return str(venv_bin)
@@ -272,7 +303,7 @@ def build_mlx_command(
 
     Returns:
         Command list for subprocess.
-    
+
     Raises:
         ValueError: If any input validation fails.
     """
@@ -280,28 +311,30 @@ def build_mlx_command(
     model_path = validate_path(model_path, allow_hf_model=True)
     host = validate_host(host)
     model_type = validate_model_type(model_type)
-    tool_call_parser = validate_parser_name(tool_call_parser, ALLOWED_TOOL_CALL_PARSERS, "tool_call_parser")
-    reasoning_parser = validate_parser_name(reasoning_parser, ALLOWED_REASONING_PARSERS, "reasoning_parser")
+    tool_call_parser = validate_parser_name(
+        tool_call_parser, ALLOWED_TOOL_CALL_PARSERS, "tool_call_parser"
+    )
+    reasoning_parser = validate_parser_name(
+        reasoning_parser, ALLOWED_REASONING_PARSERS, "reasoning_parser"
+    )
     config_name = validate_config_name(config_name)
-    
+
     # Validate port range
     if not (1024 <= port <= 65535):
         raise ValueError(f"Invalid port: {port}. Must be between 1024 and 65535")
-    
+
     # Validate context_length if provided
     if context_length is not None and context_length <= 0:
         raise ValueError(f"Invalid context_length: {context_length}. Must be positive")
-    
+
     # Validate max_concurrency
     if max_concurrency <= 0:
         raise ValueError(f"Invalid max_concurrency: {max_concurrency}. Must be positive")
-    
+
     mlx_cmd = find_command_in_venv("mlx-openai-server")
     if mlx_cmd == "mlx-openai-server" or not Path(mlx_cmd).exists():
-        raise ValueError(
-            "mlx-openai-server not found. Install the MLX extra: uv sync --extra mlx"
-        )
-    
+        raise ValueError("mlx-openai-server not found. Install the MLX extra: uv sync --extra mlx")
+
     cmd = [
         mlx_cmd,
         "launch",
@@ -314,26 +347,26 @@ def build_mlx_command(
         "--host",
         host,
     ]
-    
+
     # Context length (optional - only add if specified)
     if context_length is not None and context_length > 0:
         cmd.extend(["--context-length", str(context_length)])
-    
+
     # Max concurrency (always add, default is 1)
     cmd.extend(["--max-concurrency", str(max_concurrency)])
-    
+
     # Enable auto tool choice if requested
     if enable_auto_tool_choice:
         cmd.extend(["--enable-auto-tool-choice"])
-    
+
     # Tool call parser (optional)
     if tool_call_parser:
         cmd.extend(["--tool-call-parser", tool_call_parser])
-    
+
     # Reasoning parser (optional)
     if reasoning_parser:
         cmd.extend(["--reasoning-parser", reasoning_parser])
-    
+
     # Config name for image-generation and image-edit models
     if model_type in ("image-generation", "image-edit") and config_name:
         cmd.extend(["--config-name", config_name])
@@ -343,7 +376,7 @@ def build_mlx_command(
     elif model_type == "image-edit" and not config_name:
         # Default for image-edit
         cmd.extend(["--config-name", "flux-kontext-dev"])
-    
+
     return cmd
 
 
@@ -473,7 +506,7 @@ def build_llamacpp_command(
 
     Returns:
         Command list for subprocess.
-    
+
     Raises:
         ValueError: If any input validation fails.
     """
@@ -484,32 +517,41 @@ def build_llamacpp_command(
             "install llama.cpp and ensure llama-server is on PATH"
         )
 
-    # Validate and sanitize model path
-    model_path = validate_path(model_path, allow_hf_model=False)
-    
+    # Validate and sanitize model path (local path only; HF IDs use allow_hf_model=True)
+    model_path = cast(Path, validate_path(model_path, allow_hf_model=False))
+
     # Validate port range
     if not (1024 <= port <= 65535):
         raise ValueError(f"Invalid port: {port}. Must be between 1024 and 65535")
-    
+
     # Validate context_length
     if context_length is None:
         context_length = 4096
     elif context_length <= 0:
         raise ValueError(f"Invalid context_length: {context_length}. Must be positive")
-    
+
     # Validate quantization (basic check for dangerous characters)
-    if not isinstance(quantization, str) or any(char in quantization for char in [";", "&", "|", "`", "$", "(", ")", "<", ">", "\n", "\r", "\x00"]):
+    if not isinstance(quantization, str) or any(
+        char in quantization
+        for char in [";", "&", "|", "`", "$", "(", ")", "<", ">", "\n", "\r", "\x00"]
+    ):
         raise ValueError(f"Invalid quantization: contains dangerous characters: {quantization}")
-    
+
     # Validate max_concurrency
     if max_concurrency <= 0:
         raise ValueError(f"Invalid max_concurrency: {max_concurrency}. Must be positive")
-    
+
     # Unsloth guidance: offload all layers to GPU (999), use all CPU threads (-1)
     n_gpu_layers = 999
     type_k_val = _cache_type_to_ggml_type(cache_type_k) if cache_type_k else 8
     type_v_val = _cache_type_to_ggml_type(cache_type_v) if cache_type_v else 8
-    flash_val = "true" if flash_attn in (True, "on", "true") else "false" if flash_attn is not None else "true"
+    flash_val = (
+        "true"
+        if flash_attn in (True, "on", "true")
+        else "false"
+        if flash_attn is not None
+        else "true"
+    )
     cmd = [
         sys.executable,
         "-m",
@@ -564,11 +606,11 @@ def start_model_server(model_def, config: ModelConfig) -> subprocess.Popen | Non
     if not model_def.model_path:
         log.error("model_path_not_specified", model_id=model_def.id)
         return None
-    
+
     # Check if model_path is a local path or Hugging Face model ID
     # Hugging Face IDs don't start with "/" and contain "/"
     is_hf_model = "/" in model_def.model_path and not model_def.model_path.startswith("/")
-    
+
     if is_hf_model:
         # It's a Hugging Face model ID - will be downloaded automatically
         model_path = model_def.model_path
@@ -625,7 +667,7 @@ def start_model_server(model_def, config: ModelConfig) -> subprocess.Popen | Non
                     "llamacpp_does_not_support_hf_models",
                     model_id=model_def.id,
                     model_path=model_path,
-                    message="llama.cpp backend requires local .gguf files, not Hugging Face model IDs"
+                    message="llama.cpp backend requires local .gguf files, not Hugging Face model IDs",
                 )
                 return None
             model_path_obj = Path(model_path)
@@ -640,7 +682,9 @@ def start_model_server(model_def, config: ModelConfig) -> subprocess.Popen | Non
                     )
                     return None
                 model_path_obj = gguf_files[0]
-                log.info("resolved_gguf_from_directory", model_id=model_def.id, gguf=str(model_path_obj))
+                log.info(
+                    "resolved_gguf_from_directory", model_id=model_def.id, gguf=str(model_path_obj)
+                )
             # Prefer native llama-server (e.g. brew install llama.cpp) for Qwen3.5 and full Unsloth support
             native_bin = find_native_llama_server()
             if model_type == "rerank" and not native_bin:
@@ -701,11 +745,7 @@ def start_model_server(model_def, config: ModelConfig) -> subprocess.Popen | Non
     # Start process (capture stderr so we can log it on startup failure)
     # For llamacpp Python server only: set env for enable_thinking. Native llama-server gets --chat-template-kwargs on CLI.
     run_env = os.environ.copy()
-    if (
-        model_def.backend == "llamacpp"
-        and not used_native_llama_server
-        and chat_template_kwargs
-    ):
+    if model_def.backend == "llamacpp" and not used_native_llama_server and chat_template_kwargs:
         kw = json.dumps(chat_template_kwargs)
         run_env["LLAMA_CHAT_TEMPLATE_KWARGS"] = kw
         run_env["LLAMA_ARG_CHAT_TEMPLATE_KWARGS"] = kw
@@ -717,10 +757,10 @@ def start_model_server(model_def, config: ModelConfig) -> subprocess.Popen | Non
             text=True,
             env=run_env,
         )
-        
+
         # Give the process a moment to fail fast if there are startup errors
         time.sleep(0.5)
-        
+
         # Check if process is still running
         if process.poll() is not None:
             # Process exited immediately - startup failure; log stderr for debugging
@@ -738,7 +778,7 @@ def start_model_server(model_def, config: ModelConfig) -> subprocess.Popen | Non
                 stderr=stderr_out or None,
             )
             return None
-        
+
         log.info(
             "model_server_started",
             model_id=model_def.id,
@@ -776,21 +816,36 @@ def main() -> None:
     for role, model_def in config.models.items():
         # Skip disabled models
         if not model_def.enabled:
-            log.info("skipping_disabled_model", model_id=model_def.id, role=role, port=model_def.port)
+            log.info(
+                "skipping_disabled_model", model_id=model_def.id, role=role, port=model_def.port
+            )
             continue
-        
+
         attempted += 1
-        log.info("attempting_to_start_server", model_id=model_def.id, role=role, port=model_def.port, backend=model_def.backend)
+        log.info(
+            "attempting_to_start_server",
+            model_id=model_def.id,
+            role=role,
+            port=model_def.port,
+            backend=model_def.backend,
+        )
         process = start_model_server(model_def, config)
         if process:
             processes.append((model_def.id, process))
-            log.info("server_started_successfully", model_id=model_def.id, port=model_def.port, pid=process.pid)
+            log.info(
+                "server_started_successfully",
+                model_id=model_def.id,
+                port=model_def.port,
+                pid=process.pid,
+            )
         else:
             failed += 1
-            log.warning("server_failed_to_start", model_id=model_def.id, role=role, port=model_def.port)
+            log.warning(
+                "server_failed_to_start", model_id=model_def.id, role=role, port=model_def.port
+            )
 
     log.info("startup_summary", attempted=attempted, started=len(processes), failed=failed)
-    
+
     if not processes:
         log.error("no_servers_started", attempted=attempted)
         sys.exit(1)
