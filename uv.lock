@@ -1103,18 +1103,44 @@ wheels = [
 name = "mlx-lm"
 version = "0.31.2"
 source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "sys_platform == 'darwin'",
+]
 dependencies = [
-    { name = "jinja2" },
+    { name = "jinja2", marker = "sys_platform == 'darwin'" },
     { name = "mlx", marker = "sys_platform == 'darwin'" },
-    { name = "numpy" },
-    { name = "protobuf" },
-    { name = "pyyaml" },
-    { name = "sentencepiece" },
-    { name = "transformers" },
+    { name = "numpy", marker = "sys_platform == 'darwin'" },
+    { name = "protobuf", marker = "sys_platform == 'darwin'" },
+    { name = "pyyaml", marker = "sys_platform == 'darwin'" },
+    { name = "sentencepiece", marker = "sys_platform == 'darwin'" },
+    { name = "transformers", marker = "sys_platform == 'darwin'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/51/d7/66ac623c87f9ca834e49f8c79ff3be69179a6b5f23fc7b257fcd4fbb15bd/mlx_lm-0.31.2.tar.gz", hash = "sha256:2681b7652546d36128f43d6cc7698ec43529a1845a27350394d1843be63c652b", size = 301181, upload-time = "2026-04-07T21:36:51.229Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d5/67/63b032a4f11d1a634f26cedf4c5e0e33ea027bf189b1a10e1cac2653db92/mlx_lm-0.31.2-py3-none-any.whl", hash = "sha256:a90a7905031b2580b4923f92e0fb156ca287f452bb1a9e41a60dcbc971532d46", size = 407972, upload-time = "2026-04-07T21:36:49.859Z" },
+]
+
+[[package]]
+name = "mlx-lm"
+version = "0.31.3"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "sys_platform == 'win32'",
+    "sys_platform == 'emscripten'",
+    "sys_platform == 'linux'",
+    "sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32'",
+]
+dependencies = [
+    { name = "jinja2", marker = "sys_platform != 'darwin'" },
+    { name = "numpy", marker = "sys_platform != 'darwin'" },
+    { name = "protobuf", marker = "sys_platform != 'darwin'" },
+    { name = "pyyaml", marker = "sys_platform != 'darwin'" },
+    { name = "sentencepiece", marker = "sys_platform != 'darwin'" },
+    { name = "transformers", marker = "sys_platform != 'darwin'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/84/94/9a38d6b0c6fcca995b9136c94eb7da1e9c5165652edf228b96b29960fa7a/mlx_lm-0.31.3.tar.gz", hash = "sha256:61eb0e3ba09444f77f874aff295401d7ccd20b39495cbbce0c782a15474ce733", size = 304318, upload-time = "2026-04-22T07:37:27.922Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/90/02/9a67b8e4f87e3e2e5cd7b1ad79304b93c09a0db6af34bee75e6551c06c60/mlx_lm-0.31.3-py3-none-any.whl", hash = "sha256:758cfddf1180053b7613db76fad3d246a331a2a905808e1164a275621fc983b8", size = 408890, upload-time = "2026-04-22T07:37:25.965Z" },
 ]
 
 [[package]]
@@ -1143,7 +1169,8 @@ dependencies = [
     { name = "mflux" },
     { name = "mlx" },
     { name = "mlx-embeddings" },
-    { name = "mlx-lm" },
+    { name = "mlx-lm", version = "0.31.2", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'darwin'" },
+    { name = "mlx-lm", version = "0.31.3", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'darwin'" },
     { name = "mlx-vlm" },
     { name = "mlx-whisper" },
     { name = "numpy" },
@@ -1172,7 +1199,8 @@ dependencies = [
     { name = "fastapi" },
     { name = "miniaudio" },
     { name = "mlx" },
-    { name = "mlx-lm" },
+    { name = "mlx-lm", version = "0.31.2", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'darwin'" },
+    { name = "mlx-lm", version = "0.31.3", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'darwin'" },
     { name = "numpy" },
     { name = "opencv-python" },
     { name = "pillow" },
@@ -2296,6 +2324,8 @@ llamacpp = [
     { name = "llama-cpp-python", extra = ["server"] },
 ]
 mlx = [
+    { name = "mlx-lm", version = "0.31.2", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'darwin'" },
+    { name = "mlx-lm", version = "0.31.3", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'darwin'" },
     { name = "mlx-openai-server" },
 ]
 
@@ -2303,7 +2333,9 @@ mlx = [
 requires-dist = [
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "httpx", specifier = ">=0.27.0" },
-    { name = "llama-cpp-python", extras = ["server"], marker = "extra == 'llamacpp'", specifier = ">=0.2.0" },
+    { name = "llama-cpp-python", extras = ["server"], marker = "extra == 'llamacpp'", specifier = ">=0.3.20" },
+    { name = "mlx-lm", marker = "sys_platform == 'darwin' and extra == 'mlx'", specifier = ">=0.31.2" },
+    { name = "mlx-lm", marker = "sys_platform != 'darwin' and extra == 'mlx'", specifier = ">=0.31.3" },
     { name = "mlx-openai-server", marker = "extra == 'mlx'", specifier = ">=1.7.1" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.11.0" },
     { name = "protobuf", specifier = ">=6.33.5" },

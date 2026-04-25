@@ -38,10 +38,12 @@ dev = [
 # Backend inference servers (install only what you need)
 mlx = [
     "mlx-openai-server>=1.7.1",
+    "mlx-lm>=0.31.2; sys_platform == 'darwin'",
+    "mlx-lm>=0.31.3; sys_platform != 'darwin'",
 ]
 
 llamacpp = [
-    "llama-cpp-python[server]>=0.2.0",
+    "llama-cpp-python[server]>=0.3.20",
 ]
 
 [tool.uv]
