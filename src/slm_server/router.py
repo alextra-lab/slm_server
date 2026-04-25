@@ -53,16 +53,42 @@ def _get_model_definition(model_id: str, config: ModelConfig) -> ModelDefinition
     Raises:
         HTTPException: If model not found in config.
     """
-    # Search for model by ID
-    for role, model_def in config.models.items():
-        if model_def.id == model_id:
-            return model_def
+    enabled_matches: list[ModelDefinition] = []
+    disabled_match_found = False
 
-    available_models = [m.id for m in config.models.values()]
+    # Route only to enabled model entries. This avoids selecting a disabled
+    # duplicate entry when multiple config roles share the same model id.
+    for model_def in config.models.values():
+        if model_def.id != model_id:
+            continue
+        if model_def.enabled:
+            enabled_matches.append(model_def)
+        else:
+            disabled_match_found = True
+
+    if len(enabled_matches) == 1:
+        return enabled_matches[0]
+
+    if len(enabled_matches) > 1:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Model '{model_id}' is configured multiple times as enabled. "
+                "Ensure model IDs are unique among enabled entries."
+            ),
+        )
+
+    if disabled_match_found:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Model '{model_id}' is configured but currently disabled.",
+        )
+
+    available_models = [m.id for m in config.models.values() if m.enabled]
     raise HTTPException(
         status_code=404,
         detail=(
-            f"Model '{model_id}' not found in configuration. Available models: {available_models}"
+            f"Model '{model_id}' not found in enabled configuration. Available models: {available_models}"
         ),
     )
 

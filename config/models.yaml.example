@@ -31,6 +31,8 @@
 #
 # llama.cpp-only fields:
 #   chat_template_kwargs – Dict for --chat-template-kwargs (e.g. {enable_thinking: true}).
+#   chat_template_file   – Optional path to a .jinja file passed as --chat-template-file.
+#                          Overrides the chat template embedded in the GGUF.
 #   temp / top_p / top_k / min_p – Sampling parameters.
 #   cache_type_k / cache_type_v  – KV cache type, e.g. "q8_0" or "f16".
 #   flash_attn  – Flash attention on/off (true/false).
@@ -69,6 +71,8 @@ models:
     tool_call_parser: "qwen3"
     reasoning_parser: "qwen3"
     chat_template_kwargs: {"enable_thinking": false}
+    # Optional: pin a specific template file instead of the GGUF-embedded template.
+    # chat_template_file: "config/templates/qwen3.6-unsloth.jinja"
     cache_type_k: "q8_0"
     cache_type_v: "q8_0"
     kv_unified: true

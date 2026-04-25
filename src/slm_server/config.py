@@ -52,6 +52,10 @@ class ModelDefinition(BaseModel):
         None,
         description="Optional chat template kwargs for llama.cpp (e.g. enable_thinking for Qwen3.5). Only used when backend is llamacpp.",
     )
+    chat_template_file: str | None = Field(
+        None,
+        description="Optional path to a Jinja chat template file. Overrides the template embedded in the GGUF (passed to llama-server as --chat-template-file). Resolved relative to the repo root if not absolute.",
+    )
     # Optional llamacpp-only CLI options; only applied when present (no defaults in code).
     temp: float | None = Field(
         None, description="Sampling temperature (llamacpp). Only used when backend is llamacpp."
@@ -114,6 +118,10 @@ def _non_lm_model_config_warnings(role: str, model_def: ModelDefinition) -> list
     if model_def.chat_template_kwargs:
         issues.append(
             f"{role}: model_type {label} does not use chat_template_kwargs; remove for clarity"
+        )
+    if model_def.chat_template_file:
+        issues.append(
+            f"{role}: model_type {label} does not use chat_template_file; remove for clarity"
         )
     return issues
 

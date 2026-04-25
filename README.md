@@ -86,6 +86,7 @@ Copy `config/models.yaml.example` to `config/models.yaml` and set your model pat
 | Field | Default | Description |
 |-------|---------|-------------|
 | `chat_template_kwargs` | `null` | Dict passed as `--chat-template-kwargs` (e.g. `{enable_thinking: true}` for Qwen3.5) |
+| `chat_template_file` | `null` | Optional path passed as `--chat-template-file` to override the GGUF-embedded Jinja template (resolved relative to repo root if not absolute) |
 | `temp` | — | Sampling temperature |
 | `top_p` | — | Top-p sampling |
 | `top_k` | — | Top-k sampling |
@@ -128,6 +129,7 @@ Standard chat completions. The `model` field in the request body selects the bac
 ```
 
 The router also injects `chat_template_kwargs` from config into the request body if set and not already present.
+Routing uses only enabled model entries. If the same model ID appears in multiple enabled entries, the router returns `409` so model IDs stay unambiguous.
 
 ### `POST /v1/responses`
 

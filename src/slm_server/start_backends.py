@@ -397,6 +397,7 @@ def build_llama_native_command(
     llama_server_bin: str,
     model_type: str = "lm",
     *,
+    chat_template_file: str | Path | None = None,
     temp: float | None = None,
     top_p: float | None = None,
     top_k: int | None = None,
@@ -410,6 +411,7 @@ def build_llama_native_command(
     """Build command for native llama-server (e.g. from brew install llama.cpp).
 
     Uses Unsloth-recommended flags and supports --chat-template-kwargs (qwen35, qwen35moe).
+    Supports --chat-template-file to override the GGUF-embedded template.
     Optional sampling/cache flags are only added when present (config-driven).
     For model_type "embeddings", adds --embedding (OpenAI /v1/embeddings).
     For model_type "rerank", adds --embedding, --pooling rank, --reranking (OpenAI /v1/rerank).
@@ -444,6 +446,13 @@ def build_llama_native_command(
         cmd.extend(["--embedding", "--pooling", "rank", "--reranking"])
     elif chat_template_kwargs:
         cmd.extend(["--chat-template-kwargs", json.dumps(chat_template_kwargs)])
+    if chat_template_file is not None:
+        template_path = cast(Path, validate_path(chat_template_file, allow_hf_model=False))
+        if not template_path.is_absolute():
+            template_path = (Path(__file__).resolve().parents[2] / template_path).resolve()
+        if not template_path.exists():
+            raise ValueError(f"chat_template_file not found: {template_path}")
+        cmd.extend(["--chat-template-file", str(template_path)])
     # Optional config-driven flags (only add when present)
     if temp is not None:
         cmd.extend(["--temp", str(temp)])
@@ -636,6 +645,9 @@ def start_model_server(model_def, config: ModelConfig) -> subprocess.Popen | Non
     chat_template_kwargs = (
         None if skip_chat_template else getattr(model_def, "chat_template_kwargs", None)
     )
+    chat_template_file = (
+        None if skip_chat_template else getattr(model_def, "chat_template_file", None)
+    )
 
     # Build command based on backend (llamacpp may use native binary or Python server)
     used_native_llama_server = False
@@ -704,6 +716,7 @@ def start_model_server(model_def, config: ModelConfig) -> subprocess.Popen | Non
                     model_def.quantization,
                     model_def.max_concurrency,
                     chat_template_kwargs=chat_template_kwargs,
+                    chat_template_file=chat_template_file,
                     model_alias=model_def.id,
                     llama_server_bin=native_bin,
                     model_type=model_type,
