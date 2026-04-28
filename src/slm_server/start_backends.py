@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import time
+from functools import lru_cache
 from pathlib import Path
 from typing import Literal, cast
 
@@ -275,6 +276,22 @@ def find_command_in_venv(command: str) -> str:
     return command
 
 
+@lru_cache(maxsize=1)
+def get_mlx_launch_supported_flags(mlx_cmd: str) -> set[str]:
+    """Return supported flag names for `mlx-openai-server launch` (without leading '--')."""
+    try:
+        result = subprocess.run(
+            [mlx_cmd, "launch", "--help"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except Exception:
+        return set()
+    help_text = (result.stdout or "") + "\n" + (result.stderr or "")
+    return {m.group(1) for m in re.finditer(r"--([a-z0-9][a-z0-9-]*)", help_text)}
+
+
 def build_mlx_command(
     model_path: Path | str,
     port: int,
@@ -352,8 +369,13 @@ def build_mlx_command(
     if context_length is not None and context_length > 0:
         cmd.extend(["--context-length", str(context_length)])
 
-    # Max concurrency (always add, default is 1)
-    cmd.extend(["--max-concurrency", str(max_concurrency)])
+    # max-concurrency was removed in newer mlx-openai-server releases.
+    # Detect supported flags and map max_concurrency to queue-size when needed.
+    supported_flags = get_mlx_launch_supported_flags(mlx_cmd)
+    if "max-concurrency" in supported_flags:
+        cmd.extend(["--max-concurrency", str(max_concurrency)])
+    elif "queue-size" in supported_flags:
+        cmd.extend(["--queue-size", str(max_concurrency)])
 
     # Enable auto tool choice if requested
     if enable_auto_tool_choice:
@@ -763,19 +785,30 @@ def start_model_server(model_def, config: ModelConfig) -> subprocess.Popen | Non
         run_env["LLAMA_CHAT_TEMPLATE_KWARGS"] = kw
         run_env["LLAMA_ARG_CHAT_TEMPLATE_KWARGS"] = kw
     try:
-        process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=True,
-            env=run_env,
-        )
+        max_attempts = 3 if model_def.backend == "mlx" else 1
+        for attempt in range(1, max_attempts + 1):
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=run_env,
+            )
 
-        # Give the process a moment to fail fast if there are startup errors
-        time.sleep(0.5)
+            # Give the process a moment to fail fast if there are startup errors
+            time.sleep(0.5)
 
-        # Check if process is still running
-        if process.poll() is not None:
+            # Check if process is still running
+            if process.poll() is None:
+                log.info(
+                    "model_server_started",
+                    model_id=model_def.id,
+                    backend=model_def.backend,
+                    port=model_def.port,
+                    pid=process.pid,
+                )
+                return process
+
             # Process exited immediately - startup failure; log stderr for debugging
             stderr_out = ""
             if process.stderr:
@@ -783,6 +816,23 @@ def start_model_server(model_def, config: ModelConfig) -> subprocess.Popen | Non
                     stderr_out = (process.stderr.read() or "").strip()
                 except Exception:
                     pass
+
+            is_mlx_bootstrap_flake = (
+                model_def.backend == "mlx"
+                and process.returncode == -6
+                and "NSRangeException" in stderr_out
+            )
+            if is_mlx_bootstrap_flake and attempt < max_attempts:
+                log.warning(
+                    "mlx_startup_crashed_retrying",
+                    model_id=model_def.id,
+                    port=model_def.port,
+                    attempt=attempt,
+                    max_attempts=max_attempts,
+                )
+                time.sleep(1.0)
+                continue
+
             log.error(
                 "server_exited_immediately",
                 model_id=model_def.id,
@@ -792,14 +842,7 @@ def start_model_server(model_def, config: ModelConfig) -> subprocess.Popen | Non
             )
             return None
 
-        log.info(
-            "model_server_started",
-            model_id=model_def.id,
-            backend=model_def.backend,
-            port=model_def.port,
-            pid=process.pid,
-        )
-        return process
+        return None
     except Exception as e:
         log.error("failed_to_start_server", model_id=model_def.id, error=str(e))
         return None

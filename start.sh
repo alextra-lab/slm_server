@@ -120,6 +120,13 @@ BACKEND_PID=$!
 # Wait for backend processes to spawn and for mlx-openai-server to load models and bind to ports
 sleep 10
 
+# Ensure the backend launcher itself is still running (port checks alone can be false positives
+# if stale processes are already bound to configured ports).
+if ! kill -0 "$BACKEND_PID" 2>/dev/null; then
+    echo "❌ Error: Backend launcher process exited unexpectedly (pid $BACKEND_PID)"
+    exit 1
+fi
+
 # Verify all backend servers are ready
 if ! verify_backend_ports; then
     echo "🛑 Shutting down backend servers..."
@@ -134,6 +141,13 @@ ROUTER_PID=$!
 
 # Wait a bit for router to start
 sleep 2
+
+# Ensure router process did not die immediately (e.g., port already in use).
+if ! kill -0 "$ROUTER_PID" 2>/dev/null; then
+    echo "❌ Error: Routing service process exited unexpectedly (pid $ROUTER_PID)"
+    kill $BACKEND_PID 2>/dev/null || true
+    exit 1
+fi
 
 # Verify router is ready
 if ! check_port 8000; then

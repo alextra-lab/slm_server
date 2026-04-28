@@ -67,7 +67,7 @@ Copy `config/models.yaml.example` to `config/models.yaml` and set your model pat
 | `quantization` | yes | — | Quantization level (e.g. `8bit`, `Q8_0`, `f16`) — informational for MLX; affects KV cache defaults for llamacpp |
 | `model_type` | no | `lm` | `lm`, `multimodal`, `image-generation`, `image-edit`, `embeddings`, `rerank`, or `whisper` |
 | `context_length` | no | model default | Maximum context length; omit to use the model's built-in default |
-| `max_concurrency` | no | `1` | Maximum concurrent requests |
+| `max_concurrency` | no | `1` | Maximum concurrent requests (MLX maps this to the server's supported queue/concurrency flag at runtime) |
 | `host` | no | `0.0.0.0` | Host the backend server binds to |
 | `enabled` | no | `true` | Set to `false` to skip this model on startup |
 | `supports_function_calling` | no | `false` | Reported in `/v1/models` response |
@@ -77,8 +77,8 @@ Copy `config/models.yaml.example` to `config/models.yaml` and set your model pat
 | Field | Default | Description |
 |-------|---------|-------------|
 | `enable_auto_tool_choice` | `false` | Pass `--enable-auto-tool-choice` to mlx-openai-server |
-| `tool_call_parser` | `null` | Parser for tool calls. Options: `qwen3`, `glm4_moe`, `qwen3_coder`, `qwen3_moe`, `qwen3_next`, `qwen3_vl`, `harmony`, `minimax_m2` |
-| `reasoning_parser` | `null` | Parser for reasoning/thinking tokens. Options: `qwen3`, `glm4_moe`, `qwen3_moe`, `qwen3_next`, `qwen3_vl`, `harmony`, `minimax_m2` |
+| `tool_call_parser` | `null` | Parser for tool calls. See current `mlx-openai-server --help` for the full parser list supported by your installed version |
+| `reasoning_parser` | `null` | Parser for reasoning/thinking tokens. Set to `null` (or omit) to disable thinking mode |
 | `config_name` | `flux-schnell` / `flux-kontext-dev` | Config name for `image-generation` or `image-edit` model types |
 
 **llama.cpp-only fields** (passed to `llama-server` or `llama_cpp.server`):
@@ -112,6 +112,18 @@ Two formats are accepted:
   ```
 
 For llamacpp with a directory, the server picks the first `.gguf` file found (alphabetically). Hugging Face model IDs are not supported for llamacpp — use a local path.
+
+### Qwen3.5 MLX Note
+
+For `mlx-community/Qwen3.5-9B-8bit` local checkpoints, use:
+
+```yaml
+model_type: "multimodal"
+tool_call_parser: "qwen3_coder"
+reasoning_parser: null   # disables thinking
+```
+
+This model's config uses the Qwen 3.5 multimodal architecture, so `model_type: multimodal` is required.
 
 ## API
 
@@ -229,6 +241,7 @@ Each model must have a unique port. Config validation warns about port conflicts
 - Check `/v1/backends/health` to see which backends are down
 - Ensure model paths are correct and files exist
 - For llamacpp: verify `llama-server` is on PATH (`which llama-server`)
+- `start.sh` now checks process liveness in addition to open ports, so stale listeners on old PIDs no longer produce false "ready" status
 - Check logs for error messages
 
 ### "unknown model architecture" error (llamacpp)

@@ -68,6 +68,7 @@ models:
     id: "qwen/qwen3-4b-2507"
     backend: "mlx"
     port: 8501
+    model_type: "lm"
     context_length: 40960
     quantization: "8bit"
     max_concurrency: 2
@@ -92,6 +93,14 @@ models:
 
 For llamacpp with a directory, the server picks the first `.gguf` file found. Hugging Face IDs are not supported for llamacpp.
 
+For local `mlx-community/Qwen3.5-9B-8bit` models, use:
+
+```yaml
+model_type: "multimodal"
+tool_call_parser: "qwen3_coder"
+reasoning_parser: null   # disables thinking mode
+```
+
 ## 4. Start the Server
 
 **Using the start script:**
@@ -101,6 +110,7 @@ For llamacpp with a directory, the server picks the first `.gguf` file found. Hu
 ```
 
 This starts all enabled backend servers, waits for them to bind to their ports, then starts the routing service on port 8000.
+It also verifies backend/router process liveness so stale old listeners do not produce false "ready" results.
 
 **Manual startup:**
 
