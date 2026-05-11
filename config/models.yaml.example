@@ -34,6 +34,7 @@
 #   chat_template_file   – Optional path to a .jinja file passed as --chat-template-file.
 #                          Overrides the chat template embedded in the GGUF.
 #   temp / top_p / top_k / min_p – Sampling parameters.
+#   presence_penalty / repetition_penalty – Repeat penalty parameters.
 #   cache_type_k / cache_type_v  – KV cache type, e.g. "q8_0" or "f16".
 #   flash_attn  – Flash attention on/off (true/false).
 #   kv_unified  – Unified KV cache. Native llama-server only.
@@ -58,26 +59,33 @@ models:
 
   # --- llama.cpp language model example (GGUF, native llama-server) ---
   reasoning:
-    id: "unsloth/qwen3.5-9b"
+    id: "unsloth/qwen3.6-35-A3B"
     backend: "llamacpp"
     port: 8502
     model_type: "lm"
-    context_length: 16384
-    quantization: "UD-Q8_K_XL"
+    context_length: 131072
+    quantization: "UD-Q4_K_XL"
     max_concurrency: 1
-    default_timeout: 120
+    default_timeout: 600
     supports_function_calling: true
     enable_auto_tool_choice: true
     tool_call_parser: "qwen3"
     reasoning_parser: "qwen3"
-    chat_template_kwargs: {"enable_thinking": false}
+    chat_template_kwargs: {"enable_thinking": true, "preserve_thinking": true}
     # Optional: pin a specific template file instead of the GGUF-embedded template.
-    # chat_template_file: "config/templates/qwen3.6-unsloth.jinja"
+    chat_template_file: "config/templates/qwen3.6-unsloth.jinja"
+    temp: 1.0
+    top_p: 0.95
+    top_k: 20
+    min_p: 0.0
+    presence_penalty: 1.5
+    repetition_penalty: 1.0
     cache_type_k: "q8_0"
     cache_type_v: "q8_0"
     kv_unified: true
     flash_attn: true
-    model_path: "/path/to/Qwen3.5-9B-GGUF"  # directory with .gguf or direct path to .gguf
+    fit: true
+    model_path: "/path/to/Qwen3.6-35B-A3B-GGUF/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf"
 
   # --- Text embeddings (GGUF): llamacpp + model_type embeddings ---
   embeddings:

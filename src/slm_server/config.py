@@ -69,6 +69,12 @@ class ModelDefinition(BaseModel):
     min_p: float | None = Field(
         None, description="Min-p sampling (llamacpp). Only used when backend is llamacpp."
     )
+    presence_penalty: float | None = Field(
+        None, description="Presence penalty (llamacpp). Only used when backend is llamacpp."
+    )
+    repetition_penalty: float | None = Field(
+        None, description="Repeat/repetition penalty (llamacpp). Only used when backend is llamacpp."
+    )
     kv_unified: bool | None = Field(
         None,
         description="Use unified KV cache (llamacpp native). Only used when backend is llamacpp.",

@@ -44,6 +44,26 @@ def test_build_llama_native_command_lm_still_uses_chat_template_kwargs(
     assert "--chat-template-kwargs" in cmd
 
 
+def test_build_llama_native_command_includes_penalty_flags(tmp_path: Path) -> None:
+    gguf = tmp_path / "model.gguf"
+    gguf.write_bytes(b"")
+    cmd = build_llama_native_command(
+        gguf,
+        8500,
+        2048,
+        "q8",
+        1,
+        None,
+        "test/model",
+        "/usr/bin/true",
+        model_type="lm",
+        presence_penalty=1.5,
+        repetition_penalty=1.0,
+    )
+    assert cmd[cmd.index("--presence-penalty") + 1] == "1.5"
+    assert cmd[cmd.index("--repeat-penalty") + 1] == "1.0"
+
+
 def test_build_llamacpp_command_embedding_mode(tmp_path: Path) -> None:
     gguf = tmp_path / "model.gguf"
     gguf.write_bytes(b"")
@@ -57,6 +77,23 @@ def test_build_llamacpp_command_embedding_mode(tmp_path: Path) -> None:
     )
     i = cmd.index("--embedding")
     assert cmd[i + 1] == "true"
+
+
+def test_build_llamacpp_command_includes_penalty_flags(tmp_path: Path) -> None:
+    gguf = tmp_path / "model.gguf"
+    gguf.write_bytes(b"")
+    cmd = build_llamacpp_command(
+        gguf,
+        8501,
+        2048,
+        "q8",
+        1,
+        model_type="lm",
+        presence_penalty=1.5,
+        repetition_penalty=1.0,
+    )
+    assert cmd[cmd.index("--presence_penalty") + 1] == "1.5"
+    assert cmd[cmd.index("--repeat_penalty") + 1] == "1.0"
 
 
 def test_validate_model_config_embeddings_warns_on_lm_only_options() -> None:

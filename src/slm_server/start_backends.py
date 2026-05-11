@@ -424,6 +424,8 @@ def build_llama_native_command(
     top_p: float | None = None,
     top_k: int | None = None,
     min_p: float | None = None,
+    presence_penalty: float | None = None,
+    repetition_penalty: float | None = None,
     kv_unified: bool | None = None,
     cache_type_k: str | None = None,
     cache_type_v: str | None = None,
@@ -434,7 +436,7 @@ def build_llama_native_command(
 
     Uses Unsloth-recommended flags and supports --chat-template-kwargs (qwen35, qwen35moe).
     Supports --chat-template-file to override the GGUF-embedded template.
-    Optional sampling/cache flags are only added when present (config-driven).
+    Optional sampling/penalty/cache flags are only added when present (config-driven).
     For model_type "embeddings", adds --embedding (OpenAI /v1/embeddings).
     For model_type "rerank", adds --embedding, --pooling rank, --reranking (OpenAI /v1/rerank).
     """
@@ -484,6 +486,10 @@ def build_llama_native_command(
         cmd.extend(["--top-k", str(top_k)])
     if min_p is not None:
         cmd.extend(["--min-p", str(min_p)])
+    if presence_penalty is not None:
+        cmd.extend(["--presence-penalty", str(presence_penalty)])
+    if repetition_penalty is not None:
+        cmd.extend(["--repeat-penalty", str(repetition_penalty)])
     if kv_unified is True:
         cmd.append("--kv-unified")
     if cache_type_k is not None:
@@ -517,6 +523,8 @@ def build_llamacpp_command(
     top_p: float | None = None,
     top_k: int | None = None,
     min_p: float | None = None,
+    presence_penalty: float | None = None,
+    repetition_penalty: float | None = None,
     cache_type_k: str | None = None,
     cache_type_v: str | None = None,
     flash_attn: bool | str | None = None,
@@ -533,7 +541,7 @@ def build_llamacpp_command(
         model_alias: Model name advertised by the server (for Claude Code / Unsloth; e.g. unsloth/Qwen3.5-35B-A3B).
         model_type: When "embeddings", enables embedding mode (--embedding true).
         rerank is not supported (use native llama-server only).
-        temp, top_p, top_k, min_p, cache_type_k, cache_type_v, flash_attn: Optional; only added when present.
+        temp, top_p, top_k, min_p, presence_penalty, repetition_penalty, cache_type_k, cache_type_v, flash_attn: Optional; only added when present.
 
     Returns:
         Command list for subprocess.
@@ -620,6 +628,10 @@ def build_llamacpp_command(
         cmd.extend(["--top_k", str(top_k)])
     if min_p is not None:
         cmd.extend(["--min_p", str(min_p)])
+    if presence_penalty is not None:
+        cmd.extend(["--presence_penalty", str(presence_penalty)])
+    if repetition_penalty is not None:
+        cmd.extend(["--repeat_penalty", str(repetition_penalty)])
     return cmd
 
 
@@ -746,6 +758,8 @@ def start_model_server(model_def, config: ModelConfig) -> subprocess.Popen | Non
                     top_p=getattr(model_def, "top_p", None),
                     top_k=getattr(model_def, "top_k", None),
                     min_p=getattr(model_def, "min_p", None),
+                    presence_penalty=getattr(model_def, "presence_penalty", None),
+                    repetition_penalty=getattr(model_def, "repetition_penalty", None),
                     kv_unified=getattr(model_def, "kv_unified", None),
                     cache_type_k=getattr(model_def, "cache_type_k", None),
                     cache_type_v=getattr(model_def, "cache_type_v", None),
@@ -766,6 +780,8 @@ def start_model_server(model_def, config: ModelConfig) -> subprocess.Popen | Non
                     top_p=getattr(model_def, "top_p", None),
                     top_k=getattr(model_def, "top_k", None),
                     min_p=getattr(model_def, "min_p", None),
+                    presence_penalty=getattr(model_def, "presence_penalty", None),
+                    repetition_penalty=getattr(model_def, "repetition_penalty", None),
                     cache_type_k=getattr(model_def, "cache_type_k", None),
                     cache_type_v=getattr(model_def, "cache_type_v", None),
                     flash_attn=getattr(model_def, "flash_attn", None),
