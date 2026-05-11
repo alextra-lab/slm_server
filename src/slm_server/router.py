@@ -40,6 +40,46 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="SLM Server Router", version="0.2.0", lifespan=lifespan)
 
 
+MIN_BACKEND_TIMEOUT_SECONDS = 1.0
+MAX_BACKEND_TIMEOUT_SECONDS = 3600.0
+
+
+def _resolve_backend_timeout_seconds(body: dict[str, Any], model_def: ModelDefinition) -> float:
+    """Resolve per-request backend timeout, with model default fallback.
+
+    Clients may pass `timeout` in the request body to override model defaults.
+    This field is consumed by the router and not forwarded to model backends.
+    """
+    timeout_value = body.get("timeout")
+    if timeout_value is None:
+        return float(model_def.default_timeout)
+
+    if isinstance(timeout_value, bool):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid 'timeout' field. Must be a positive number of seconds.",
+        )
+
+    if isinstance(timeout_value, int | float):
+        timeout_seconds = float(timeout_value)
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid 'timeout' field. Must be a positive number of seconds.",
+        )
+
+    if timeout_seconds < MIN_BACKEND_TIMEOUT_SECONDS or timeout_seconds > MAX_BACKEND_TIMEOUT_SECONDS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Invalid 'timeout' field. Must be between "
+                f"{int(MIN_BACKEND_TIMEOUT_SECONDS)} and {int(MAX_BACKEND_TIMEOUT_SECONDS)} seconds."
+            ),
+        )
+
+    return timeout_seconds
+
+
 def _get_model_definition(model_id: str, config: ModelConfig) -> ModelDefinition:
     """Get model definition by ID.
 
@@ -288,6 +328,8 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
 
         # Inject chat_template_kwargs (e.g. enable_thinking for Unsloth Qwen3.5) so backend gets it per-request
         body_forward = dict(body)
+        request_timeout_seconds = _resolve_backend_timeout_seconds(body_forward, model_def)
+        body_forward.pop("timeout", None)
         if (
             getattr(model_def, "chat_template_kwargs", None)
             and "chat_template_kwargs" not in body_forward
@@ -295,7 +337,9 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
             body_forward["chat_template_kwargs"] = model_def.chat_template_kwargs
 
         # Override timeout for this request based on model config
-        timeout = httpx.Timeout(connect=10.0, read=model_def.default_timeout, write=30.0, pool=10.0)
+        timeout = httpx.Timeout(
+            connect=10.0, read=request_timeout_seconds, write=30.0, pool=10.0
+        )
 
         response = await client.post(
             backend_url, json=body_forward, headers=filtered_headers, timeout=timeout
@@ -413,16 +457,19 @@ async def embeddings(request: Request) -> JSONResponse:
 
         filtered_headers = _filtered_forward_headers(request)
         client = request.app.state.http_client
+        body_forward = dict(body)
+        request_timeout_seconds = _resolve_backend_timeout_seconds(body_forward, model_def)
+        body_forward.pop("timeout", None)
         timeout = httpx.Timeout(
             connect=10.0,
-            read=model_def.default_timeout,
+            read=request_timeout_seconds,
             write=30.0,
             pool=10.0,
         )
 
         response = await client.post(
             backend_url,
-            json=body,
+            json=body_forward,
             headers=filtered_headers,
             timeout=timeout,
         )
@@ -525,16 +572,19 @@ async def rerank(request: Request) -> JSONResponse:
 
         filtered_headers = _filtered_forward_headers(request)
         client = request.app.state.http_client
+        body_forward = dict(body)
+        request_timeout_seconds = _resolve_backend_timeout_seconds(body_forward, model_def)
+        body_forward.pop("timeout", None)
         timeout = httpx.Timeout(
             connect=10.0,
-            read=model_def.default_timeout,
+            read=request_timeout_seconds,
             write=30.0,
             pool=10.0,
         )
 
         response = await client.post(
             backend_url,
-            json=body,
+            json=body_forward,
             headers=filtered_headers,
             timeout=timeout,
         )
@@ -647,12 +697,15 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
         client = request.app.state.http_client
 
         # Override timeout for this request
-        timeout = httpx.Timeout(connect=10.0, read=model_def.default_timeout, write=30.0, pool=10.0)
+        body_forward = dict(body)
+        request_timeout_seconds = _resolve_backend_timeout_seconds(body_forward, model_def)
+        body_forward.pop("timeout", None)
+        timeout = httpx.Timeout(connect=10.0, read=request_timeout_seconds, write=30.0, pool=10.0)
 
         try:
             # Try /v1/responses first
             response = await client.post(
-                backend_url, json=body, headers=filtered_headers, timeout=timeout
+                backend_url, json=body_forward, headers=filtered_headers, timeout=timeout
             )
 
             # If successful (not 404/422), return response
@@ -706,7 +759,7 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
         )
 
         # Convert request format
-        chat_body = _convert_responses_to_chat(body)
+        chat_body = _convert_responses_to_chat(body_forward)
         if (
             getattr(model_def, "chat_template_kwargs", None)
             and "chat_template_kwargs" not in chat_body
