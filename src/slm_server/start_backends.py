@@ -292,6 +292,26 @@ def get_mlx_launch_supported_flags(mlx_cmd: str) -> set[str]:
     return {m.group(1) for m in re.finditer(r"--([a-z0-9][a-z0-9-]*)", help_text)}
 
 
+def validate_served_model_name(served_model_name: str | None) -> str | None:
+    """Validate served-model-name to ensure it is safe to pass on a CLI.
+
+    Accepts None or strings without shell metacharacters / whitespace control chars.
+    HF-style ids like "org/model" are allowed.
+    """
+    if served_model_name is None:
+        return None
+    if not isinstance(served_model_name, str) or not served_model_name:
+        raise ValueError(f"Invalid served_model_name: {served_model_name!r}")
+    dangerous_chars = [";", "&", "|", "`", "$", "(", ")", "<", ">", "\n", "\r", "\x00", " ", "\t"]
+    for char in dangerous_chars:
+        if char in served_model_name:
+            raise ValueError(
+                f"Invalid served_model_name: contains dangerous character {char!r}: "
+                f"{served_model_name}"
+            )
+    return served_model_name
+
+
 def build_mlx_command(
     model_path: Path | str,
     port: int,
@@ -303,6 +323,7 @@ def build_mlx_command(
     tool_call_parser: str | None = None,
     reasoning_parser: str | None = None,
     config_name: str | None = None,
+    served_model_name: str | None = None,
 ) -> list[str]:
     """Build command to start MLX OpenAI server.
 
@@ -317,6 +338,9 @@ def build_mlx_command(
         tool_call_parser: Tool call parser to use (e.g., "qwen3", "qwen3_coder").
         reasoning_parser: Reasoning parser to use (e.g., "qwen3", "harmony").
         config_name: Model configuration name (for image-generation/image-edit).
+        served_model_name: Name advertised by /v1/models and accepted in request 'model' field.
+            Passed via --served-model-name when supported by the installed mlx-openai-server.
+            Without this, mlx-openai-server defaults the served name to model_path.
 
     Returns:
         Command list for subprocess.
@@ -335,6 +359,7 @@ def build_mlx_command(
         reasoning_parser, ALLOWED_REASONING_PARSERS, "reasoning_parser"
     )
     config_name = validate_config_name(config_name)
+    served_model_name = validate_served_model_name(served_model_name)
 
     # Validate port range
     if not (1024 <= port <= 65535):
@@ -376,6 +401,11 @@ def build_mlx_command(
         cmd.extend(["--max-concurrency", str(max_concurrency)])
     elif "queue-size" in supported_flags:
         cmd.extend(["--queue-size", str(max_concurrency)])
+
+    # Without --served-model-name, mlx-openai-server advertises model_path as
+    # the model id in /v1/models, which breaks routing by config id.
+    if served_model_name and "served-model-name" in supported_flags:
+        cmd.extend(["--served-model-name", served_model_name])
 
     # Enable auto tool choice if requested
     if enable_auto_tool_choice:
@@ -705,6 +735,7 @@ def start_model_server(model_def, config: ModelConfig) -> subprocess.Popen | Non
                 tool_call_parser=getattr(model_def, "tool_call_parser", None),
                 reasoning_parser=getattr(model_def, "reasoning_parser", None),
                 config_name=getattr(model_def, "config_name", None),
+                served_model_name=model_def.id,
             )
         elif model_def.backend == "llamacpp":
             # llama.cpp doesn't support Hugging Face model IDs - must be local path

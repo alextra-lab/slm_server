@@ -112,6 +112,7 @@ def start_model_server(
                 tool_call_parser=getattr(model_config, "tool_call_parser", None),
                 reasoning_parser=getattr(model_config, "reasoning_parser", None),
                 config_name=getattr(model_config, "config_name", None),
+                served_model_name=model_config.id,
             )
         elif backend == "llamacpp":
             chat_kw = (
