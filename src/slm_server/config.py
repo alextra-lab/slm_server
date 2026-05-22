@@ -75,6 +75,9 @@ class ModelDefinition(BaseModel):
     repetition_penalty: float | None = Field(
         None, description="Repeat/repetition penalty (llamacpp). Only used when backend is llamacpp."
     )
+    n_predict: int | None = Field(
+        None, description="Maximum number of tokens to predict (llamacpp --n-predict). Only used when backend is llamacpp."
+    )
     kv_unified: bool | None = Field(
         None,
         description="Use unified KV cache (llamacpp native). Only used when backend is llamacpp.",
@@ -95,6 +98,14 @@ class ModelDefinition(BaseModel):
     )
     model_path: str | None = Field(
         None, description="Optional path to model file (auto-discovered if not set)"
+    )
+    mmproj_path: str | None = Field(
+        None,
+        description=(
+            "Path to multimodal projector .gguf file (llamacpp + native llama-server). "
+            "Required when model_type='multimodal' and backend='llamacpp'. "
+            "Passed to llama-server as --mmproj."
+        ),
     )
     enabled: bool = Field(True, description="Whether this model server should be started")
 
@@ -152,6 +163,25 @@ def validate_model_config(config: ModelConfig) -> list[str]:
 
         if model_def.model_type in ("embeddings", "rerank"):
             issues.extend(_non_lm_model_config_warnings(role, model_def))
+
+        # Multimodal projector validation (independent of local vs HF model_path)
+        if model_def.model_type == "multimodal":
+            if model_def.backend == "llamacpp":
+                if not model_def.mmproj_path:
+                    issues.append(
+                        f"{role}: model_type multimodal with backend llamacpp requires mmproj_path"
+                    )
+                else:
+                    mmproj = Path(model_def.mmproj_path)
+                    if not mmproj.exists():
+                        issues.append(f"{role}: mmproj_path does not exist: {mmproj}")
+                    elif not str(mmproj).lower().endswith(".gguf"):
+                        issues.append(f"{role}: mmproj_path must be a .gguf file: {mmproj}")
+        elif model_def.mmproj_path:
+            issues.append(
+                f"{role}: mmproj_path is set but model_type is {model_def.model_type}; "
+                "mmproj_path only applies to multimodal models — remove for clarity"
+            )
 
         # Check if model_path is provided
         if not model_def.model_path:

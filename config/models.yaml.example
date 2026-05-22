@@ -14,7 +14,10 @@
 #                      MLX; affects KV cache defaults for llamacpp.
 #   model_type       – "lm" (default), "multimodal", "image-generation", "image-edit",
 #                      "embeddings", "rerank", or "whisper".
+#                      multimodal: llamacpp + native llama-server only; requires mmproj_path.
 #                      rerank: llamacpp + native llama-server only.
+#   mmproj_path      – Path to multimodal projector .gguf file. Required when
+#                      model_type="multimodal" and backend="llamacpp". Passed as --mmproj.
 #   context_length   – Maximum context length. Omit to use the model's built-in default.
 #   max_concurrency  – Maximum concurrent requests. Default: 1.
 #   host             – Host the backend server binds to. Default: 0.0.0.0.

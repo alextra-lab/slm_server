@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -450,6 +451,7 @@ def build_llama_native_command(
     model_type: str = "lm",
     *,
     chat_template_file: str | Path | None = None,
+    mmproj_path: str | Path | None = None,
     temp: float | None = None,
     top_p: float | None = None,
     top_k: int | None = None,
@@ -461,6 +463,7 @@ def build_llama_native_command(
     cache_type_v: str | None = None,
     flash_attn: bool | str | None = None,
     fit: bool | str | None = None,
+    n_predict: int | None = None,
 ) -> list[str]:
     """Build command for native llama-server (e.g. from brew install llama.cpp).
 
@@ -507,6 +510,11 @@ def build_llama_native_command(
         if not template_path.exists():
             raise ValueError(f"chat_template_file not found: {template_path}")
         cmd.extend(["--chat-template-file", str(template_path)])
+    if model_type == "multimodal" and mmproj_path is not None:
+        mmproj_resolved = cast(Path, validate_path(mmproj_path, allow_hf_model=False))
+        if not mmproj_resolved.exists():
+            raise ValueError(f"mmproj_path does not exist: {mmproj_resolved}")
+        cmd.extend(["--mmproj", str(mmproj_resolved)])
     # Optional config-driven flags (only add when present)
     if temp is not None:
         cmd.extend(["--temp", str(temp)])
@@ -530,6 +538,8 @@ def build_llama_native_command(
         cmd.extend(["--flash-attn", "on" if flash_attn in (True, "on", "true") else "off"])
     if fit is not None:
         cmd.extend(["--fit", "on" if fit in (True, "on", "true") else "off"])
+    if n_predict is not None:
+        cmd.extend(["--n-predict", str(n_predict)])
     return cmd
 
 
@@ -558,6 +568,7 @@ def build_llamacpp_command(
     cache_type_k: str | None = None,
     cache_type_v: str | None = None,
     flash_attn: bool | str | None = None,
+    n_predict: int | None = None,
 ) -> list[str]:
     """Build command to start llama.cpp server.
 
@@ -584,6 +595,11 @@ def build_llamacpp_command(
         raise ValueError(
             "model_type rerank requires native llama-server (llama_cpp.server has no /v1/rerank); "
             "install llama.cpp and ensure llama-server is on PATH"
+        )
+    if model_type == "multimodal":
+        raise ValueError(
+            "model_type multimodal requires native llama-server (llama_cpp.server lacks vision support); "
+            "install llama.cpp so `llama-server` is on PATH"
         )
 
     # Validate and sanitize model path (local path only; HF IDs use allow_hf_model=True)
@@ -662,6 +678,8 @@ def build_llamacpp_command(
         cmd.extend(["--presence_penalty", str(presence_penalty)])
     if repetition_penalty is not None:
         cmd.extend(["--repeat_penalty", str(repetition_penalty)])
+    if n_predict is not None:
+        cmd.extend(["--n_predict", str(n_predict)])
     return cmd
 
 
@@ -782,6 +800,7 @@ def start_model_server(model_def, config: ModelConfig) -> subprocess.Popen | Non
                     model_def.max_concurrency,
                     chat_template_kwargs=chat_template_kwargs,
                     chat_template_file=chat_template_file,
+                    mmproj_path=getattr(model_def, "mmproj_path", None),
                     model_alias=model_def.id,
                     llama_server_bin=native_bin,
                     model_type=model_type,
@@ -796,6 +815,7 @@ def start_model_server(model_def, config: ModelConfig) -> subprocess.Popen | Non
                     cache_type_v=getattr(model_def, "cache_type_v", None),
                     flash_attn=getattr(model_def, "flash_attn", None),
                     fit=getattr(model_def, "fit", None),
+                    n_predict=getattr(model_def, "n_predict", None),
                 )
             else:
                 cmd = build_llamacpp_command(
@@ -816,6 +836,7 @@ def start_model_server(model_def, config: ModelConfig) -> subprocess.Popen | Non
                     cache_type_k=getattr(model_def, "cache_type_k", None),
                     cache_type_v=getattr(model_def, "cache_type_v", None),
                     flash_attn=getattr(model_def, "flash_attn", None),
+                    n_predict=getattr(model_def, "n_predict", None),
                 )
         else:
             log.error("unknown_backend", backend=model_def.backend, model_id=model_def.id)
@@ -895,6 +916,21 @@ def start_model_server(model_def, config: ModelConfig) -> subprocess.Popen | Non
         return None
 
 
+def _terminate_processes(processes: list[tuple[str, subprocess.Popen]]) -> None:
+    """Terminate all started backend server processes."""
+    for model_id, process in processes:
+        log.info("terminating_model_server", model_id=model_id, pid=process.pid)
+        process.terminate()
+
+    for model_id, process in processes:
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            log.warning("model_server_did_not_stop", model_id=model_id, pid=process.pid)
+            process.kill()
+            process.wait(timeout=5)
+
+
 def main() -> None:
     """Main entry point: start all backend servers."""
     structlog.configure(
@@ -905,6 +941,16 @@ def main() -> None:
         ]
     )
 
+    processes: list[tuple[str, subprocess.Popen]] = []
+
+    def handle_shutdown_signal(signum, _frame) -> None:
+        signal_name = signal.Signals(signum).name
+        log.info("shutdown_signal_received", signal=signal_name)
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, handle_shutdown_signal)
+    signal.signal(signal.SIGINT, handle_shutdown_signal)
+
     # Load config
     try:
         config = load_model_config()
@@ -913,7 +959,6 @@ def main() -> None:
         sys.exit(1)
 
     # Start all model servers
-    processes: list[tuple[str, subprocess.Popen]] = []
     attempted = 0
     failed = 0
     for role, model_def in config.models.items():
@@ -961,11 +1006,7 @@ def main() -> None:
             process.wait()
     except KeyboardInterrupt:
         log.info("shutting_down_servers")
-        for model_id, process in processes:
-            process.terminate()
-            process.wait(timeout=5)
-            if process.poll() is None:
-                process.kill()
+        _terminate_processes(processes)
         log.info("all_servers_stopped")
 
 
