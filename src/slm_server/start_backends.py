@@ -464,6 +464,8 @@ def build_llama_native_command(
     flash_attn: bool | str | None = None,
     fit: bool | str | None = None,
     n_predict: int | None = None,
+    cont_batching: bool | None = None,
+    cache_prompt: bool | None = None,
 ) -> list[str]:
     """Build command for native llama-server (e.g. from brew install llama.cpp).
 
@@ -494,6 +496,8 @@ def build_llama_native_command(
         "999",
         "--threads",
         "-1",
+        "--parallel",
+        str(max_concurrency),
     ]
     if model_alias:
         cmd.extend(["--alias", model_alias])
@@ -509,7 +513,7 @@ def build_llama_native_command(
             template_path = (Path(__file__).resolve().parents[2] / template_path).resolve()
         if not template_path.exists():
             raise ValueError(f"chat_template_file not found: {template_path}")
-        cmd.extend(["--chat-template-file", str(template_path)])
+        cmd.extend(["--jinja", "--chat-template-file", str(template_path)])
     if model_type == "multimodal" and mmproj_path is not None:
         mmproj_resolved = cast(Path, validate_path(mmproj_path, allow_hf_model=False))
         if not mmproj_resolved.exists():
@@ -540,6 +544,10 @@ def build_llama_native_command(
         cmd.extend(["--fit", "on" if fit in (True, "on", "true") else "off"])
     if n_predict is not None:
         cmd.extend(["--n-predict", str(n_predict)])
+    if cont_batching is True:
+        cmd.append("--cont-batching")
+    if cache_prompt is not None:
+        cmd.append("--cache-prompt" if cache_prompt else "--no-cache-prompt")
     return cmd
 
 
@@ -816,6 +824,8 @@ def start_model_server(model_def, config: ModelConfig) -> subprocess.Popen | Non
                     flash_attn=getattr(model_def, "flash_attn", None),
                     fit=getattr(model_def, "fit", None),
                     n_predict=getattr(model_def, "n_predict", None),
+                    cont_batching=getattr(model_def, "cont_batching", None),
+                    cache_prompt=getattr(model_def, "cache_prompt", None),
                 )
             else:
                 cmd = build_llamacpp_command(

@@ -96,6 +96,14 @@ class ModelDefinition(BaseModel):
         None,
         description="Fit option (llamacpp native; true or 'on'). Only used when backend is llamacpp.",
     )
+    cont_batching: bool | None = Field(
+        None,
+        description="Enable continuous batching (llamacpp native --cont-batching). Only used when backend is llamacpp.",
+    )
+    cache_prompt: bool | None = Field(
+        None,
+        description="Enable/disable prompt caching (llamacpp native --cache-prompt/--no-cache-prompt). Only used when backend is llamacpp.",
+    )
     model_path: str | None = Field(
         None, description="Optional path to model file (auto-discovered if not set)"
     )

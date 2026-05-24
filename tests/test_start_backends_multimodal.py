@@ -1,7 +1,8 @@
 """Tests for llama.cpp launch flags when model_type is multimodal (vision)."""
 
-import pytest
 from pathlib import Path
+
+import pytest
 
 from slm_server.config import ModelConfig, ModelDefinition, validate_model_config
 from slm_server.start_backends import build_llama_native_command, build_llamacpp_command

@@ -86,16 +86,22 @@ Copy `config/models.yaml.example` to `config/models.yaml` and set your model pat
 | Field | Default | Description |
 |-------|---------|-------------|
 | `chat_template_kwargs` | `null` | Dict passed as `--chat-template-kwargs` (e.g. `{enable_thinking: true}` for Qwen3.5) |
-| `chat_template_file` | `null` | Optional path passed as `--chat-template-file` to override the GGUF-embedded Jinja template (resolved relative to repo root if not absolute) |
+| `chat_template_file` | `null` | Path to a Jinja template file passed as `--jinja --chat-template-file` (overrides the GGUF-embedded template; resolved relative to repo root if not absolute) — native `llama-server` only |
 | `temp` | — | Sampling temperature |
 | `top_p` | — | Top-p sampling |
 | `top_k` | — | Top-k sampling |
 | `min_p` | — | Min-p sampling |
+| `presence_penalty` | — | Presence penalty (discourages already-seen tokens) |
+| `repetition_penalty` | — | Repeat penalty multiplier (`1.0` = disabled) |
+| `n_predict` | — | Maximum tokens to generate per request |
 | `cache_type_k` | — | KV cache type for K (e.g. `q8_0`, `f16`) |
 | `cache_type_v` | — | KV cache type for V (e.g. `q8_0`, `f16`) |
 | `flash_attn` | — | Flash attention (`true` / `false`) |
 | `kv_unified` | — | Unified KV cache — native `llama-server` only |
 | `fit` | — | `--fit` flag — native `llama-server` only |
+| `cont_batching` | — | Enable continuous batching (`--cont-batching`) — native `llama-server` only |
+| `cache_prompt` | — | Enable/disable prompt prefix caching (`true` → `--cache-prompt`, `false` → `--no-cache-prompt`) — native `llama-server` only |
+| `mmproj_path` | `null` | Path to multimodal projector `.gguf` — required when `model_type: multimodal` |
 
 ### Model Path
 
@@ -216,7 +222,8 @@ Router health check.
 - **Native `llama-server`** (e.g. `brew install llama.cpp`) is used automatically when found on PATH and is required for:
   - `model_type: rerank`
   - Models with newer architectures (Qwen3.5, etc.) not yet supported by the PyPI build
-  - `kv_unified` and `fit` flags
+  - `kv_unified`, `fit`, `cont_batching`, and `cache_prompt` flags
+  - `chat_template_file` (with `--jinja` for Jinja template processing)
 - When native `llama-server` is not found, falls back to `python -m llama_cpp.server`
 - Requires local `.gguf` files — Hugging Face model IDs are not supported
 
