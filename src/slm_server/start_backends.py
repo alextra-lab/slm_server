@@ -466,6 +466,8 @@ def build_llama_native_command(
     n_predict: int | None = None,
     cont_batching: bool | None = None,
     cache_prompt: bool | None = None,
+    spec_type: str | None = None,
+    spec_draft_n_max: int | None = None,
 ) -> list[str]:
     """Build command for native llama-server (e.g. from brew install llama.cpp).
 
@@ -548,6 +550,10 @@ def build_llama_native_command(
         cmd.append("--cont-batching")
     if cache_prompt is not None:
         cmd.append("--cache-prompt" if cache_prompt else "--no-cache-prompt")
+    if spec_type is not None:
+        cmd.extend(["--spec-type", spec_type])
+    if spec_draft_n_max is not None:
+        cmd.extend(["--spec-draft-n-max", str(spec_draft_n_max)])
     return cmd
 
 
@@ -826,6 +832,8 @@ def start_model_server(model_def, config: ModelConfig) -> subprocess.Popen | Non
                     n_predict=getattr(model_def, "n_predict", None),
                     cont_batching=getattr(model_def, "cont_batching", None),
                     cache_prompt=getattr(model_def, "cache_prompt", None),
+                    spec_type=getattr(model_def, "spec_type", None),
+                    spec_draft_n_max=getattr(model_def, "spec_draft_n_max", None),
                 )
             else:
                 cmd = build_llamacpp_command(

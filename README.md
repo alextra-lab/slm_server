@@ -101,6 +101,8 @@ Copy `config/models.yaml.example` to `config/models.yaml` and set your model pat
 | `fit` | — | `--fit` flag — native `llama-server` only |
 | `cont_batching` | — | Enable continuous batching (`--cont-batching`) — native `llama-server` only |
 | `cache_prompt` | — | Enable/disable prompt prefix caching (`true` → `--cache-prompt`, `false` → `--no-cache-prompt`) — native `llama-server` only |
+| `spec_type` | — | Speculative decoding type (e.g. `draft-mtp`) — native `llama-server` only |
+| `spec_draft_n_max` | — | Max draft tokens for speculative decoding (e.g. `2`) — native `llama-server` only |
 | `mmproj_path` | `null` | Path to multimodal projector `.gguf` — required when `model_type: multimodal` |
 
 ### Model Path

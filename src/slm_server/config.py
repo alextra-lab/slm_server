@@ -104,6 +104,14 @@ class ModelDefinition(BaseModel):
         None,
         description="Enable/disable prompt caching (llamacpp native --cache-prompt/--no-cache-prompt). Only used when backend is llamacpp.",
     )
+    spec_type: str | None = Field(
+        None,
+        description="Speculative decoding type (llamacpp native --spec-type, e.g. 'draft-mtp'). Only used when backend is llamacpp.",
+    )
+    spec_draft_n_max: int | None = Field(
+        None,
+        description="Max draft tokens for speculative decoding (llamacpp native --spec-draft-n-max). Only used when backend is llamacpp.",
+    )
     model_path: str | None = Field(
         None, description="Optional path to model file (auto-discovered if not set)"
     )
