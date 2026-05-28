@@ -1,6 +1,10 @@
 """FastAPI routing service that routes requests to backend model servers based on model ID."""
 
+import asyncio
+import json
+import time
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -9,6 +13,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from structlog import get_logger
 
 from slm_server.config import ModelConfig, ModelDefinition, load_model_config
+from slm_server.telemetry import ship_request_complete
 
 log = get_logger(__name__)
 
@@ -68,7 +73,10 @@ def _resolve_backend_timeout_seconds(body: dict[str, Any], model_def: ModelDefin
             detail="Invalid 'timeout' field. Must be a positive number of seconds.",
         )
 
-    if timeout_seconds < MIN_BACKEND_TIMEOUT_SECONDS or timeout_seconds > MAX_BACKEND_TIMEOUT_SECONDS:
+    if (
+        timeout_seconds < MIN_BACKEND_TIMEOUT_SECONDS
+        or timeout_seconds > MAX_BACKEND_TIMEOUT_SECONDS
+    ):
         raise HTTPException(
             status_code=400,
             detail=(
@@ -173,6 +181,19 @@ def _filter_response_headers(headers: httpx.Headers) -> dict[str, str]:
         "connection",  # Connection-specific, not relevant
     }
     return {k: v for k, v in headers.items() if k.lower() not in skip_headers}
+
+
+def _sse_headers(headers: httpx.Headers) -> dict[str, str]:
+    """Build headers for SSE streaming responses.
+
+    Belt-and-suspenders set to prevent proxy/Cloudflare buffering that would
+    delay the first token by 100+ seconds.
+    """
+    result = _filter_response_headers(headers)
+    result["cache-control"] = "no-cache"
+    result["x-accel-buffering"] = "no"  # nginx-style hint, honored by many proxies
+    result["connection"] = "keep-alive"  # stripped by _filter_response_headers, restore for SSE
+    return result
 
 
 def _convert_responses_to_chat(body: dict) -> dict:
@@ -302,6 +323,27 @@ def _build_error_response(
     return JSONResponse(status_code=status_code, content=content)
 
 
+def _parse_sse_telemetry(content: bytes) -> tuple[dict | None, dict | None]:
+    """Extract usage and timings dicts from a buffered SSE body."""
+    usage: dict | None = None
+    timings: dict | None = None
+    for line in content.decode(errors="replace").splitlines():
+        if not line.startswith("data:"):
+            continue
+        payload = line[5:].strip()
+        if payload == "[DONE]":
+            continue
+        try:
+            chunk = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        if chunk.get("usage"):
+            usage = chunk["usage"]
+        if "timings" in chunk:
+            timings = chunk["timings"]
+    return usage, timings
+
+
 @app.post("/v1/chat/completions", response_model=None)
 async def chat_completions(request: Request) -> JSONResponse | StreamingResponse:
     """Route chat completions requests to appropriate backend."""
@@ -314,11 +356,18 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
         model_def = _get_model_definition(model_id, request.app.state.model_config)
         backend_url = _get_backend_url(model_def, "/v1/chat/completions")
 
+        trace_id = request.headers.get("x-trace-id")
+        span_id = request.headers.get("x-span-id")
+        session_id = request.headers.get("x-session-id")
+
         log.info(
             "routing_request",
             model_id=model_id,
             backend=model_def.backend,
             port=model_def.port,
+            trace_id=trace_id,
+            span_id=span_id,
+            session_id=session_id,
         )
 
         filtered_headers = _filtered_forward_headers(request)
@@ -337,13 +386,45 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
             body_forward["chat_template_kwargs"] = model_def.chat_template_kwargs
 
         # Override timeout for this request based on model config
-        timeout = httpx.Timeout(
-            connect=10.0, read=request_timeout_seconds, write=30.0, pool=10.0
-        )
+        timeout = httpx.Timeout(connect=10.0, read=request_timeout_seconds, write=30.0, pool=10.0)
 
+        t0 = time.monotonic()
         response = await client.post(
             backend_url, json=body_forward, headers=filtered_headers, timeout=timeout
         )
+        total_ms = (time.monotonic() - t0) * 1000
+
+        # Parse buffered response for telemetry (response.content is fully buffered by client.post)
+        if response.headers.get("content-type", "").startswith("text/event-stream"):
+            usage, timings = _parse_sse_telemetry(response.content)
+        else:
+            try:
+                rjson = response.json()
+                usage = rjson.get("usage") or None
+            except Exception:
+                usage = None
+            timings = None
+
+        tel_doc: dict[str, object] = {
+            "trace_id": trace_id,
+            "span_id": span_id,
+            "session_id": session_id,
+            "model_id": model_id,
+            "backend": model_def.backend,
+            "port": model_def.port,
+            "prompt_tokens": usage.get("prompt_tokens") if usage else None,
+            "completion_tokens": usage.get("completion_tokens") if usage else None,
+            "prefill_ms": timings.get("prompt_ms") if timings else None,
+            "decode_ms": timings.get("predicted_ms") if timings else None,
+            "prompt_n": timings.get("prompt_n") if timings else None,
+            "predicted_n": timings.get("predicted_n") if timings else None,
+            "cache_reuse": timings.get("tokens_cached") if timings else None,
+            "total_ms": round(total_ms, 1),
+            "status": response.status_code,
+            "ts": datetime.now(UTC).isoformat(),
+        }
+        log.info("request_complete", **tel_doc)
+        asyncio.create_task(ship_request_complete(tel_doc))
 
         # Log error responses for debugging
         if response.status_code >= 400:
@@ -369,7 +450,7 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
             return StreamingResponse(
                 stream_response(),
                 media_type="text/event-stream",
-                headers=_filter_response_headers(response.headers),
+                headers=_sse_headers(response.headers),
             )
         else:
             # Non-streaming response
@@ -735,7 +816,7 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
                     return StreamingResponse(
                         stream_response(),
                         media_type="text/event-stream",
-                        headers=_filter_response_headers(response.headers),
+                        headers=_sse_headers(response.headers),
                     )
                 else:
                     return JSONResponse(
@@ -794,7 +875,7 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
             return StreamingResponse(
                 stream_response(),
                 media_type="text/event-stream",
-                headers=_filter_response_headers(response.headers),
+                headers=_sse_headers(response.headers),
             )
         else:
             # Convert response back to responses format
