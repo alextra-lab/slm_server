@@ -32,7 +32,7 @@ async def test_ship_skips_when_disabled(monkeypatch: pytest.MonkeyPatch) -> None
 
 async def test_ship_posts_to_correct_url_with_cf_headers(monkeypatch: pytest.MonkeyPatch) -> None:
     """POST hits the dated slm-requests-* index with CF-Access headers attached."""
-    monkeypatch.setattr(telemetry_module, "_ES_URL", "https://es.frenchforet.com")
+    monkeypatch.setattr(telemetry_module, "_ES_URL", "https://es.example.internal")
     monkeypatch.setattr(telemetry_module, "_ES_ENABLED", True)
     monkeypatch.setattr(telemetry_module, "_ES_INDEX_PREFIX", "slm-requests")
     monkeypatch.setattr(telemetry_module, "_CF_CLIENT_ID", "cf-id")
@@ -52,7 +52,7 @@ async def test_ship_posts_to_correct_url_with_cf_headers(monkeypatch: pytest.Mon
     mock_client.post.assert_called_once()
     url: str = mock_client.post.call_args[0][0]
     headers: dict = mock_client.post.call_args[1]["headers"]
-    assert "es.frenchforet.com" in url
+    assert "es.example.internal" in url
     assert "slm-requests-" in url
     assert url.endswith("/_doc")
     assert headers["CF-Access-Client-Id"] == "cf-id"
