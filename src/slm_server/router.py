@@ -73,7 +73,10 @@ def _resolve_backend_timeout_seconds(body: dict[str, Any], model_def: ModelDefin
             detail="Invalid 'timeout' field. Must be a positive number of seconds.",
         )
 
-    if timeout_seconds < MIN_BACKEND_TIMEOUT_SECONDS or timeout_seconds > MAX_BACKEND_TIMEOUT_SECONDS:
+    if (
+        timeout_seconds < MIN_BACKEND_TIMEOUT_SECONDS
+        or timeout_seconds > MAX_BACKEND_TIMEOUT_SECONDS
+    ):
         raise HTTPException(
             status_code=400,
             detail=(
@@ -383,9 +386,7 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
             body_forward["chat_template_kwargs"] = model_def.chat_template_kwargs
 
         # Override timeout for this request based on model config
-        timeout = httpx.Timeout(
-            connect=10.0, read=request_timeout_seconds, write=30.0, pool=10.0
-        )
+        timeout = httpx.Timeout(connect=10.0, read=request_timeout_seconds, write=30.0, pool=10.0)
 
         t0 = time.monotonic()
         response = await client.post(

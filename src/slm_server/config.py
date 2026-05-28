@@ -73,10 +73,12 @@ class ModelDefinition(BaseModel):
         None, description="Presence penalty (llamacpp). Only used when backend is llamacpp."
     )
     repetition_penalty: float | None = Field(
-        None, description="Repeat/repetition penalty (llamacpp). Only used when backend is llamacpp."
+        None,
+        description="Repeat/repetition penalty (llamacpp). Only used when backend is llamacpp.",
     )
     n_predict: int | None = Field(
-        None, description="Maximum number of tokens to predict (llamacpp --n-predict). Only used when backend is llamacpp."
+        None,
+        description="Maximum number of tokens to predict (llamacpp --n-predict). Only used when backend is llamacpp.",
     )
     kv_unified: bool | None = Field(
         None,
