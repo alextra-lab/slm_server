@@ -47,7 +47,7 @@ async def ship_request_complete(doc: dict) -> None:
     try:
         async with httpx.AsyncClient() as client:
             resp = await client.post(url, json=doc, headers=headers, timeout=5.0)
-            if resp.status_code >= 400:
+            if resp.status_code >= 300:
                 log.warning("es_ship_failed", status=resp.status_code, url=url)
     except Exception as exc:  # noqa: BLE001
         log.warning("es_ship_failed", error=str(exc), url=url)
