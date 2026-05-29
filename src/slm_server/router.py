@@ -418,7 +418,7 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
             "decode_ms": timings.get("predicted_ms") if timings else None,
             "prompt_n": timings.get("prompt_n") if timings else None,
             "predicted_n": timings.get("predicted_n") if timings else None,
-            "cache_reuse": timings.get("tokens_cached") if timings else None,
+            "cache_reuse": timings.get("cache_n") if timings else None,
             "total_ms": round(total_ms, 1),
             "status": response.status_code,
             "ts": datetime.now(UTC).isoformat(),
