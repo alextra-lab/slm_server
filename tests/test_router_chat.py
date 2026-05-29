@@ -130,7 +130,7 @@ def _sse_body_with_timings() -> bytes:
                 "predicted_ms": 500.0,
                 "prompt_n": 100,
                 "predicted_n": 10,
-                "tokens_cached": 80,
+                "cache_n": 80,
             },
         },
     ]
