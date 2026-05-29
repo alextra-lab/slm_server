@@ -10,6 +10,15 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+# Load local env overrides (gitignored). Exports every assignment so child
+# processes (uv run ...) inherit the values.
+if [ -f "$SCRIPT_DIR/.env" ]; then
+    set -a
+    # shellcheck source=/dev/null
+    source "$SCRIPT_DIR/.env"
+    set +a
+fi
+
 echo "🚀 Starting SLM Server..."
 
 # Check if uv is available
