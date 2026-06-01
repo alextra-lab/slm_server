@@ -84,6 +84,17 @@ kill_pattern "mlx-openai-server" "mlx-openai-server"
 # Clean up uvicorn processes for this project
 kill_pattern "uvicorn.*slm_server" "uvicorn (slm_server)"
 
+# Clean up orphaned slm_server launcher processes. These are the detached
+# `uv run ... python -m slm_server backends/router` wrappers (and their children)
+# that survive when start.sh is terminated early — kill_port only reaps whatever
+# holds the listening socket, leaving these behind.
+kill_pattern "slm_server backends" "slm_server backends launcher"
+kill_pattern "slm_server router" "slm_server router launcher"
+
+# Clean up native llama.cpp model servers (orphans that lost their port survive
+# the port-based kills above). This project owns all llama-server instances.
+kill_pattern "llama-server" "llama.cpp model servers"
+
 # Verify all stopped
 echo ""
 echo -e "${BLUE}🔍 Verifying all services stopped...${NC}"
@@ -106,6 +117,16 @@ fi
 
 if pgrep -f "uvicorn.*slm_server" > /dev/null 2>&1; then
     echo -e "${RED}❌ uvicorn processes still running${NC}"
+    all_stopped=false
+fi
+
+if pgrep -f "slm_server (backends|router)" > /dev/null 2>&1; then
+    echo -e "${RED}❌ slm_server launcher processes still running${NC}"
+    all_stopped=false
+fi
+
+if pgrep -f "llama-server" > /dev/null 2>&1; then
+    echo -e "${RED}❌ llama-server processes still running${NC}"
     all_stopped=false
 fi
 
