@@ -8,6 +8,8 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
 echo -e "${BLUE}🛑 Stopping SLM Server...${NC}"
 
 # Function to kill process on port
@@ -68,13 +70,35 @@ echo ""
 echo -e "${BLUE}🔄 Stopping routing service...${NC}"
 kill_port 8000 "Router"
 
-# Stop backend model servers
+# Stop backend model servers. Ports and names are read from models.yaml so this
+# block never goes stale when the model lineup changes. If the read fails (e.g. uv
+# unavailable), the catch-all kill_pattern calls below still reap every backend.
 echo ""
 echo -e "${BLUE}📦 Stopping backend model servers...${NC}"
-kill_port 8500 "Router Model (LFM2.5)"
-kill_port 8501 "Standard Model (Qwen3-4B)"
-kill_port 8502 "Reasoning Model (Qwen3-8B)"
-kill_port 8503 "Coding Model (Devstral)"
+BACKEND_PORTS=""
+PORT_LINES=$(uv run python -c "
+from pathlib import Path
+import yaml
+config = Path('$SCRIPT_DIR/config/models.yaml')
+data = yaml.safe_load(config.read_text()) if config.exists() else {}
+for role, model in (data.get('models') or {}).items():
+    port = model.get('port')
+    if port:
+        print(f\"{port}|{role} ({model.get('id', role)})\")
+" 2>/dev/null)
+OLD_IFS=$IFS
+IFS='
+'
+for line in $PORT_LINES; do
+    port=${line%%|*}
+    label=${line#*|}
+    case "$port" in
+        ''|*[!0-9]*) continue ;;  # skip blank/non-numeric (e.g. stray output)
+    esac
+    kill_port "$port" "$label"
+    BACKEND_PORTS="$BACKEND_PORTS $port"
+done
+IFS=$OLD_IFS
 
 # Clean up any remaining mlx-openai-server processes
 echo ""
@@ -102,7 +126,7 @@ echo -e "${BLUE}🔍 Verifying all services stopped...${NC}"
 all_stopped=true
 
 # Check ports
-for port in 8000 8500 8501 8502 8503; do
+for port in 8000 $BACKEND_PORTS; do
     if lsof -ti:$port > /dev/null 2>&1; then
         echo -e "${RED}❌ Port $port still in use${NC}"
         all_stopped=false
