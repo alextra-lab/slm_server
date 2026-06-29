@@ -51,11 +51,15 @@ llamacpp = [
 prerelease = "allow"
 constraint-dependencies = [
     "requests>=2.33.0",   # GHSA-gc5v-m9x4-r6x2 (transitive via outlines / mlx stack)
-    "aiohttp>=3.13.4",    # 10 CVEs in <=3.13.3: header injection, DoS, SSRF, cookie leaks (transitive)
+    "aiohttp>=3.14.1",    # 20+ CVEs in <=3.13.3 and <=3.14.0: header injection, DoS, SSRF, cookie leaks, deserialization (transitive)
     "pygments>=2.20.0",  # GHSA-hmwr-4x9x-jgrw ReDoS in GUID regex (transitive via rich)
     "idna>=3.15",        # CVE-2024-3651 follow-on: idna.encode() bypass (transitive via httpx/requests)
-    # python-multipart <=0.0.24 DoS (GHSA-*) cannot be pinned higher: mlx-openai-server<0.0.25 cap.
-    # Alerts #26/#21 dismissed on GitHub. Track mlx-openai-server for an updated python-multipart bound.
+    # mlx-openai-server (latest 1.8.1) caps fastapi<0.130 and python-multipart<0.0.25, which transitively
+    # caps starlette<1.0.0. This blocks the patched releases for:
+    #   - python-multipart >=0.0.30 (alerts #34/#35/#36/#37; older #26/#21 already dismissed)
+    #   - starlette >=1.0.1 (alerts #32/#48/#49/#50/#51 — DoS/host-poisoning/Windows-only SSRF)
+    # Router exposure is low: JSON-only proxy, no form/multipart parsing, no StaticFiles, routes by body
+    # field not request.url. Track mlx-openai-server for a fastapi>=0.130 bound, then bump both.
     # diskcache<=5.6.3 has unsafe pickle deserialization (GHSA-7gh8-9274-8555); no upstream patch yet.
     # Risk is low for local-only deployments. Track: https://github.com/grantjenks/python-diskcache/issues
 ]
