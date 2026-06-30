@@ -24,7 +24,7 @@ class ModelDefinition(BaseModel):
         "lm", "multimodal", "image-generation", "image-edit", "embeddings", "rerank", "whisper"
     ] = Field(
         "lm",
-        description="Type of model to run (default: lm). rerank: llamacpp + native llama-server only.",
+        description="Type of model to run (default: lm). rerank: backend llamacpp (native llama-server) or mlx-rerank (in-repo MLX server).",
     )
     host: str = Field("0.0.0.0", description="Host to run the server on (default: 0.0.0.0)")
     enable_auto_tool_choice: bool = Field(

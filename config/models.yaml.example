@@ -5,7 +5,7 @@
 #
 # Fields (all models):
 #   id               – Model identifier; must match the "model" field in API requests.
-#   backend          – "mlx" or "llamacpp"
+#   backend          – "mlx", "llamacpp", or "mlx-rerank" (in-repo MLX reranker server)
 #   port             – Port for this model's backend server (must be unique per model).
 #   model_path       – Hugging Face model ID (MLX only, auto-downloaded) or local path to
 #                      model directory or .gguf file (required for llamacpp).
@@ -124,7 +124,7 @@ models:
     quantization: "mxfp8"
     max_concurrency: 1
     default_timeout: 120
-    model_path: "mlx-community/Qwen3-Reranker-4B-mxfp8"  # HF model ID (auto-downloaded)
+    model_path: "/path/to/Qwen3-Reranker-4B-mxfp8"  # local dir of MLX safetensors (HF model IDs not accepted for mlx-rerank)
 
   # --- Additional MLX model example (disabled by default) ---
   # coding:
