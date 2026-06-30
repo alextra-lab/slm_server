@@ -12,7 +12,10 @@ pytestmark = pytest.mark.skipif(
 def test_load_scorer_ranks_relevant_above_distractor():
     from slm_server.mlx_rerank_server import load_scorer
 
-    scorer = load_scorer(MODEL)
+    try:
+        scorer = load_scorer(MODEL)
+    except (PermissionError, OSError) as e:
+        pytest.skip(f"model dir present but not readable here: {e}")
     scores, tokens = scorer(
         "What is the capital of France?",
         ["Paris is the capital of France.", "Bananas are yellow."],
