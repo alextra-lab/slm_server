@@ -1,5 +1,6 @@
 """Self-contained MLX reranker server (Qwen3-Reranker yes/no-logit scoring)."""
 
+import argparse
 import math
 from collections.abc import Callable
 
@@ -72,3 +73,64 @@ def create_app(scorer: Scorer, served_model_name: str) -> FastAPI:
         )
 
     return app
+
+
+def _resolve_token_id(tokenizer, text: str) -> int:
+    """Resolve the single token id for 'yes'/'no', tolerant of tokenizer wrappers."""
+    hf = getattr(tokenizer, "_tokenizer", tokenizer)
+    tid = hf.convert_tokens_to_ids(text)
+    if isinstance(tid, int) and tid >= 0:
+        return tid
+    ids = tokenizer.encode(text)
+    return int(ids[-1])
+
+
+def load_scorer(model_path: str, context_length: int | None = None) -> Scorer:
+    """Load the MLX reranker and return a scorer closure."""
+    import mlx.core as mx
+    from mlx_lm import load
+
+    model, tokenizer = load(model_path)  # type: ignore[misc]
+    yes_id = _resolve_token_id(tokenizer, "yes")
+    no_id = _resolve_token_id(tokenizer, "no")
+
+    def scorer(query: str, documents: list[str], instruction: str) -> tuple[list[float], int]:
+        scores: list[float] = []
+        total = 0
+        for doc in documents:
+            ids = tokenizer.encode(build_rerank_prompt(query, doc, instruction))
+            if context_length is not None and len(ids) > context_length:
+                ids = ids[:context_length]
+            total += len(ids)
+            logits = model(mx.array([ids]))[0, -1, :]
+            scores.append(relevance_score(float(logits[yes_id].item()), float(logits[no_id].item())))
+        return scores, total
+
+    return scorer
+
+
+def run(
+    model_path: str, port: int, host: str, served_model_name: str, context_length: int | None
+) -> None:
+    """Load the scorer and serve the rerank app with uvicorn."""
+    import uvicorn
+
+    scorer = load_scorer(model_path, context_length)
+    uvicorn.run(create_app(scorer, served_model_name), host=host, port=port)
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(prog="slm_server mlx-rerank")
+    parser.add_argument("--model-path", required=True)
+    parser.add_argument("--port", type=int, required=True)
+    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--served-model-name", default=None)
+    parser.add_argument("--context-length", type=int, default=None)
+    args = parser.parse_args(argv)
+    run(
+        model_path=args.model_path,
+        port=args.port,
+        host=args.host,
+        served_model_name=args.served_model_name or args.model_path,
+        context_length=args.context_length,
+    )
