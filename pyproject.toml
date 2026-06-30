@@ -49,17 +49,23 @@ llamacpp = [
 [tool.uv]
 # MLX stack still pulls prerelease pins transitively in some versions
 prerelease = "allow"
+override-dependencies = [
+    # mlx-openai-server caps fastapi<0.130 / python-multipart<0.0.25, transitively pinning
+    # starlette<1.0.0 below its security-patched 1.x. Force the patched floors (Dependabot
+    # alerts #32/34/35/36/37/48/49/50/51). mlx backend runs as a localhost subprocess; verified
+    # it still imports under fastapi 0.13x / starlette 1.x.
+    "fastapi>=0.130.0",
+    "starlette>=1.3.1",
+    "python-multipart>=0.0.31",
+]
 constraint-dependencies = [
     "requests>=2.33.0",   # GHSA-gc5v-m9x4-r6x2 (transitive via outlines / mlx stack)
     "aiohttp>=3.14.1",    # 20+ CVEs in <=3.13.3 and <=3.14.0: header injection, DoS, SSRF, cookie leaks, deserialization (transitive)
     "pygments>=2.20.0",  # GHSA-hmwr-4x9x-jgrw ReDoS in GUID regex (transitive via rich)
     "idna>=3.15",        # CVE-2024-3651 follow-on: idna.encode() bypass (transitive via httpx/requests)
-    # mlx-openai-server (latest 1.8.1) caps fastapi<0.130 and python-multipart<0.0.25, which transitively
-    # caps starlette<1.0.0. This blocks the patched releases for:
-    #   - python-multipart >=0.0.30 (alerts #34/#35/#36/#37; older #26/#21 already dismissed)
-    #   - starlette >=1.0.1 (alerts #32/#48/#49/#50/#51 — DoS/host-poisoning/Windows-only SSRF)
-    # Router exposure is low: JSON-only proxy, no form/multipart parsing, no StaticFiles, routes by body
-    # field not request.url. Track mlx-openai-server for a fastapi>=0.130 bound, then bump both.
+    # fastapi / starlette / python-multipart patched floors are forced via override-dependencies above
+    # (mlx-openai-server's fastapi<0.130 cap is conservative; the mlx backend still imports and builds
+    # its FastAPI app under the forced stack). Drop the overrides once mlx-openai-server raises its bound.
     # diskcache<=5.6.3 has unsafe pickle deserialization (GHSA-7gh8-9274-8555); no upstream patch yet.
     # Risk is low for local-only deployments. Track: https://github.com/grantjenks/python-diskcache/issues
 ]
