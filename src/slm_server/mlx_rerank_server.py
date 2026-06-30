@@ -57,7 +57,11 @@ def create_app(scorer: Scorer, served_model_name: str) -> FastAPI:
         scores, prompt_tokens = scorer(query, documents, instruction)
         results = [{"index": i, "relevance_score": s} for i, s in enumerate(scores)]
         if top_n is not None:
-            results = sorted(results, key=lambda r: r["relevance_score"], reverse=True)[: int(top_n)]
+            try:
+                top_n = int(top_n)
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="Invalid 'top_n'")
+            results = sorted(results, key=lambda r: r["relevance_score"], reverse=True)[:top_n]
         return JSONResponse(
             {
                 "model": served_model_name,
