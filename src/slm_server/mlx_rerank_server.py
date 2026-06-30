@@ -54,15 +54,16 @@ def create_app(scorer: Scorer, served_model_name: str) -> FastAPI:
             raise HTTPException(status_code=400, detail="Missing or invalid 'documents'")
         instruction = body.get("instruction") or DEFAULT_INSTRUCTION
         top_n = body.get("top_n")
-
-        scores, prompt_tokens = scorer(query, documents, instruction)
-        results = [{"index": i, "relevance_score": s} for i, s in enumerate(scores)]
         if top_n is not None:
             try:
                 top_n = int(top_n)
             except (TypeError, ValueError):
                 raise HTTPException(status_code=400, detail="Invalid 'top_n'")
-            results = sorted(results, key=lambda r: r["relevance_score"], reverse=True)[:top_n]
+        scores, prompt_tokens = scorer(query, documents, instruction)
+        results = [{"index": i, "relevance_score": s} for i, s in enumerate(scores)]
+        results.sort(key=lambda r: r["relevance_score"], reverse=True)
+        if top_n is not None:
+            results = results[:top_n]
         return JSONResponse(
             {
                 "model": served_model_name,
@@ -94,13 +95,16 @@ def load_scorer(model_path: str, context_length: int | None = None) -> Scorer:
     yes_id = _resolve_token_id(tokenizer, "yes")
     no_id = _resolve_token_id(tokenizer, "no")
 
+    suffix_ids = tokenizer.encode(_PROMPT_SUFFIX)
+
     def scorer(query: str, documents: list[str], instruction: str) -> tuple[list[float], int]:
         scores: list[float] = []
         total = 0
         for doc in documents:
             ids = tokenizer.encode(build_rerank_prompt(query, doc, instruction))
             if context_length is not None and len(ids) > context_length:
-                ids = ids[:context_length]
+                keep = max(0, context_length - len(suffix_ids))
+                ids = ids[:keep] + suffix_ids
             total += len(ids)
             logits = model(mx.array([ids]))[0, -1, :]
             scores.append(relevance_score(float(logits[yes_id].item()), float(logits[no_id].item())))
@@ -116,7 +120,7 @@ def run(
     import uvicorn
 
     scorer = load_scorer(model_path, context_length)
-    uvicorn.run(create_app(scorer, served_model_name), host=host, port=port)
+    uvicorn.run(create_app(scorer, served_model_name), host=host, port=port, access_log=False)
 
 
 def main(argv: list[str] | None = None) -> None:

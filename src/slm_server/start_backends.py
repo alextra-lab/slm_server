@@ -460,6 +460,7 @@ def build_mlx_rerank_command(
         host,
     ]
     if served_model_name:
+        validate_served_model_name(served_model_name)
         cmd.extend(["--served-model-name", served_model_name])
     if context_length is not None:
         cmd.extend(["--context-length", str(context_length)])

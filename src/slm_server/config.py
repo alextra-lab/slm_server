@@ -191,6 +191,9 @@ def validate_model_config(config: ModelConfig) -> list[str]:
                 "(native llama-server --reranking) or mlx-rerank (in-repo MLX server)"
             )
 
+        if model_def.backend == "mlx-rerank" and model_def.model_type != "rerank":
+            issues.append(f"{role}: backend mlx-rerank requires model_type rerank")
+
         if model_def.model_type in ("embeddings", "rerank"):
             issues.extend(_non_lm_model_config_warnings(role, model_def))
 

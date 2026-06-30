@@ -16,8 +16,9 @@ def test_health():
     assert r.json()["status"] == "ok"
 
 
-def test_rerank_input_order_and_shape():
-    c = _client([0.9, 0.1])
+def test_rerank_default_sorts_descending():
+    # scores [0.1, 0.9]: doc at index 1 scores higher, so it should come first
+    c = _client([0.1, 0.9])
     r = c.post("/v1/rerank", json={"model": "m", "query": "q", "documents": ["a", "b"]})
     assert r.status_code == 200
     body = r.json()
@@ -25,8 +26,8 @@ def test_rerank_input_order_and_shape():
     assert body["model"] == "mlx-community/Qwen3-Reranker-4B-mxfp8"
     assert body["usage"] == {"prompt_tokens": 42, "total_tokens": 42}
     assert body["results"] == [
-        {"index": 0, "relevance_score": 0.9},
-        {"index": 1, "relevance_score": 0.1},
+        {"index": 1, "relevance_score": 0.9},
+        {"index": 0, "relevance_score": 0.1},
     ]
 
 

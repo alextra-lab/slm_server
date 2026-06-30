@@ -30,3 +30,9 @@ def test_validator_still_rejects_rerank_on_mlx():
     cfg = ModelConfig(models={"r": _md(backend="mlx", model_path="/tmp/does-not-exist")})
     issues = validate_model_config(cfg)
     assert any("rerank" in i and "llamacpp" in i for i in issues)
+
+
+def test_validator_rejects_mlx_rerank_with_non_rerank_model_type():
+    cfg = ModelConfig(models={"r": _md(model_type="lm", model_path="/tmp/x")})
+    issues = validate_model_config(cfg)
+    assert any("mlx-rerank requires model_type rerank" in i for i in issues)

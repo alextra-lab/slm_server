@@ -15,7 +15,7 @@
 #   model_type       – "lm" (default), "multimodal", "image-generation", "image-edit",
 #                      "embeddings", "rerank", or "whisper".
 #                      multimodal: llamacpp + native llama-server only; requires mmproj_path.
-#                      rerank: llamacpp + native llama-server only.
+#                      rerank: llamacpp + native llama-server, or mlx-rerank (in-repo MLX server).
 #   mmproj_path      – Path to multimodal projector .gguf file. Required when
 #                      model_type="multimodal" and backend="llamacpp". Passed as --mmproj.
 #   context_length   – Maximum context length. Omit to use the model's built-in default.
@@ -113,6 +113,18 @@ models:
     max_concurrency: 1
     default_timeout: 120
     model_path: "/path/to/Qwen3-Reranker-0.6B-Q8_0-GGUF"  # directory with .gguf or direct path to .gguf
+
+  # --- MLX reranker (in-repo server, Apple Silicon) ---
+  mlx_rerank:
+    id: "mlx-community/Qwen3-Reranker-4B-mxfp8"
+    backend: "mlx-rerank"
+    port: 8505
+    model_type: "rerank"
+    context_length: 40960
+    quantization: "mxfp8"
+    max_concurrency: 1
+    default_timeout: 120
+    model_path: "mlx-community/Qwen3-Reranker-4B-mxfp8"  # HF model ID (auto-downloaded)
 
   # --- Additional MLX model example (disabled by default) ---
   # coding:
