@@ -90,6 +90,14 @@ class ModelDefinition(BaseModel):
     cache_type_v: str | None = Field(
         None, description="KV cache type for V (e.g. q8_0). Only used when backend is llamacpp."
     )
+    cache_ram: int | None = Field(
+        None,
+        description="Max host context/state cache size in MiB (llamacpp native --cache-ram; 0 disables, -1 unlimited). 0 suits stateless rerank. Only used when backend is llamacpp.",
+    )
+    kv_offload: bool | None = Field(
+        None,
+        description="Offload KV cache to GPU (llamacpp native --kv-offload/--no-kv-offload; default enabled). Set false for --no-kv-offload. Only used when backend is llamacpp.",
+    )
     flash_attn: bool | str | None = Field(
         None,
         description="Flash attention on/off (llamacpp; true or 'on'). Only used when backend is llamacpp.",
@@ -113,6 +121,10 @@ class ModelDefinition(BaseModel):
     spec_draft_n_max: int | None = Field(
         None,
         description="Max draft tokens for speculative decoding (llamacpp native --spec-draft-n-max). Only used when backend is llamacpp.",
+    )
+    verbose: bool | None = Field(
+        None,
+        description="Enable verbose llama-server logging (native --verbose). Only used when backend is llamacpp.",
     )
     model_path: str | None = Field(
         None, description="Optional path to model file (auto-discovered if not set)"

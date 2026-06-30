@@ -461,6 +461,8 @@ def build_llama_native_command(
     kv_unified: bool | None = None,
     cache_type_k: str | None = None,
     cache_type_v: str | None = None,
+    cache_ram: int | None = None,
+    kv_offload: bool | None = None,
     flash_attn: bool | str | None = None,
     fit: bool | str | None = None,
     n_predict: int | None = None,
@@ -468,6 +470,7 @@ def build_llama_native_command(
     cache_prompt: bool | None = None,
     spec_type: str | None = None,
     spec_draft_n_max: int | None = None,
+    verbose: bool | None = None,
 ) -> list[str]:
     """Build command for native llama-server (e.g. from brew install llama.cpp).
 
@@ -540,6 +543,10 @@ def build_llama_native_command(
         cmd.extend(["--cache-type-k", cache_type_k])
     if cache_type_v is not None:
         cmd.extend(["--cache-type-v", cache_type_v])
+    if cache_ram is not None:
+        cmd.extend(["--cache-ram", str(cache_ram)])
+    if kv_offload is not None:
+        cmd.append("--kv-offload" if kv_offload else "--no-kv-offload")
     if flash_attn is not None:
         cmd.extend(["--flash-attn", "on" if flash_attn in (True, "on", "true") else "off"])
     if fit is not None:
@@ -554,6 +561,8 @@ def build_llama_native_command(
         cmd.extend(["--spec-type", spec_type])
     if spec_draft_n_max is not None:
         cmd.extend(["--spec-draft-n-max", str(spec_draft_n_max)])
+    if verbose:
+        cmd.append("--verbose")
     return cmd
 
 
@@ -827,6 +836,8 @@ def start_model_server(model_def, config: ModelConfig) -> subprocess.Popen | Non
                     kv_unified=getattr(model_def, "kv_unified", None),
                     cache_type_k=getattr(model_def, "cache_type_k", None),
                     cache_type_v=getattr(model_def, "cache_type_v", None),
+                    cache_ram=getattr(model_def, "cache_ram", None),
+                    kv_offload=getattr(model_def, "kv_offload", None),
                     flash_attn=getattr(model_def, "flash_attn", None),
                     fit=getattr(model_def, "fit", None),
                     n_predict=getattr(model_def, "n_predict", None),
@@ -834,6 +845,7 @@ def start_model_server(model_def, config: ModelConfig) -> subprocess.Popen | Non
                     cache_prompt=getattr(model_def, "cache_prompt", None),
                     spec_type=getattr(model_def, "spec_type", None),
                     spec_draft_n_max=getattr(model_def, "spec_draft_n_max", None),
+                    verbose=getattr(model_def, "verbose", None),
                 )
             else:
                 cmd = build_llamacpp_command(
@@ -870,16 +882,30 @@ def start_model_server(model_def, config: ModelConfig) -> subprocess.Popen | Non
         kw = json.dumps(chat_template_kwargs)
         run_env["LLAMA_CHAT_TEMPLATE_KWARGS"] = kw
         run_env["LLAMA_ARG_CHAT_TEMPLATE_KWARGS"] = kw
+    # When verbose logging is enabled, redirect stderr to a file instead of an
+    # unread PIPE. A running --verbose server would otherwise fill the pipe buffer
+    # (~64KB) and block. The file is also what makes the output reviewable.
+    verbose_log_path: Path | None = None
+    if getattr(model_def, "verbose", None):
+        log_dir = Path(__file__).resolve().parents[2] / "logs"
+        log_dir.mkdir(exist_ok=True)
+        safe_id = re.sub(r"[^A-Za-z0-9._-]", "_", model_def.id)
+        verbose_log_path = log_dir / f"llama-{safe_id}-{model_def.port}.log"
+
     try:
         max_attempts = 3 if model_def.backend == "mlx" else 1
         for attempt in range(1, max_attempts + 1):
+            verbose_log_fh = open(verbose_log_path, "w") if verbose_log_path else None
             process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
+                stderr=verbose_log_fh if verbose_log_fh else subprocess.PIPE,
                 text=True,
                 env=run_env,
             )
+            # Child holds its own dup'd fd; the parent's copy can be closed now.
+            if verbose_log_fh:
+                verbose_log_fh.close()
 
             # Give the process a moment to fail fast if there are startup errors
             time.sleep(0.5)
@@ -892,12 +918,19 @@ def start_model_server(model_def, config: ModelConfig) -> subprocess.Popen | Non
                     backend=model_def.backend,
                     port=model_def.port,
                     pid=process.pid,
+                    verbose_log=str(verbose_log_path) if verbose_log_path else None,
                 )
                 return process
 
-            # Process exited immediately - startup failure; log stderr for debugging
+            # Process exited immediately - startup failure; log stderr for debugging.
+            # When verbose-redirected to a file, stderr isn't a PIPE: read the file.
             stderr_out = ""
-            if process.stderr:
+            if verbose_log_path is not None:
+                try:
+                    stderr_out = verbose_log_path.read_text().strip()[-4000:]
+                except Exception:
+                    pass
+            elif process.stderr:
                 try:
                     stderr_out = (process.stderr.read() or "").strip()
                 except Exception:
