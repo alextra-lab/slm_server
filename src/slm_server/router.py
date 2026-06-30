@@ -344,6 +344,45 @@ def _parse_sse_telemetry(content: bytes) -> tuple[dict | None, dict | None]:
     return usage, timings
 
 
+def _build_request_telemetry(
+    *,
+    trace_id: str | None,
+    span_id: str | None,
+    session_id: str | None,
+    model_id: str,
+    backend: str,
+    port: int,
+    usage: dict | None,
+    timings: dict | None,
+    total_ms: float,
+    status: int,
+) -> dict[str, object]:
+    """Build the request_complete telemetry doc.
+
+    Single source of the schema so every slm-server request_complete event is identical
+    regardless of model or backend (chat, rerank, ...). Fields that don't apply to a given
+    request type (e.g. decode/predicted for a reranker) are left None, never dropped.
+    """
+    return {
+        "trace_id": trace_id,
+        "span_id": span_id,
+        "session_id": session_id,
+        "model_id": model_id,
+        "backend": backend,
+        "port": port,
+        "prompt_tokens": usage.get("prompt_tokens") if usage else None,
+        "completion_tokens": usage.get("completion_tokens") if usage else None,
+        "prefill_ms": timings.get("prompt_ms") if timings else None,
+        "decode_ms": timings.get("predicted_ms") if timings else None,
+        "prompt_n": timings.get("prompt_n") if timings else None,
+        "predicted_n": timings.get("predicted_n") if timings else None,
+        "cache_reuse": timings.get("cache_n") if timings else None,
+        "total_ms": round(total_ms, 1),
+        "status": status,
+        "ts": datetime.now(UTC).isoformat(),
+    }
+
+
 @app.post("/v1/chat/completions", response_model=None)
 async def chat_completions(request: Request) -> JSONResponse | StreamingResponse:
     """Route chat completions requests to appropriate backend."""
@@ -405,24 +444,18 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
                 usage = None
             timings = None
 
-        tel_doc: dict[str, object] = {
-            "trace_id": trace_id,
-            "span_id": span_id,
-            "session_id": session_id,
-            "model_id": model_id,
-            "backend": model_def.backend,
-            "port": model_def.port,
-            "prompt_tokens": usage.get("prompt_tokens") if usage else None,
-            "completion_tokens": usage.get("completion_tokens") if usage else None,
-            "prefill_ms": timings.get("prompt_ms") if timings else None,
-            "decode_ms": timings.get("predicted_ms") if timings else None,
-            "prompt_n": timings.get("prompt_n") if timings else None,
-            "predicted_n": timings.get("predicted_n") if timings else None,
-            "cache_reuse": timings.get("cache_n") if timings else None,
-            "total_ms": round(total_ms, 1),
-            "status": response.status_code,
-            "ts": datetime.now(UTC).isoformat(),
-        }
+        tel_doc = _build_request_telemetry(
+            trace_id=trace_id,
+            span_id=span_id,
+            session_id=session_id,
+            model_id=model_id,
+            backend=model_def.backend,
+            port=model_def.port,
+            usage=usage,
+            timings=timings,
+            total_ms=total_ms,
+            status=response.status_code,
+        )
         log.info("request_complete", **tel_doc)
         asyncio.create_task(ship_request_complete(tel_doc))
 
@@ -644,11 +677,18 @@ async def rerank(request: Request) -> JSONResponse:
         model_def = _get_model_definition(model_id, request.app.state.model_config)
         backend_url = _get_backend_url(model_def, "/v1/rerank")
 
+        trace_id = request.headers.get("x-trace-id")
+        span_id = request.headers.get("x-span-id")
+        session_id = request.headers.get("x-session-id")
+
         log.info(
             "routing_rerank_request",
             model_id=model_id,
             backend=model_def.backend,
             port=model_def.port,
+            trace_id=trace_id,
+            span_id=span_id,
+            session_id=session_id,
         )
 
         filtered_headers = _filtered_forward_headers(request)
@@ -663,12 +703,36 @@ async def rerank(request: Request) -> JSONResponse:
             pool=10.0,
         )
 
+        t0 = time.monotonic()
         response = await client.post(
             backend_url,
             json=body_forward,
             headers=filtered_headers,
             timeout=timeout,
         )
+        total_ms = (time.monotonic() - t0) * 1000
+
+        try:
+            usage = response.json().get("usage") or None
+        except Exception:
+            usage = None
+
+        # Same schema as chat so slm-requests-* is uniform across backends. A reranker has
+        # no decode phase, so completion/decode/predicted/cache fields stay None (via timings=None).
+        tel_doc = _build_request_telemetry(
+            trace_id=trace_id,
+            span_id=span_id,
+            session_id=session_id,
+            model_id=model_id,
+            backend=model_def.backend,
+            port=model_def.port,
+            usage=usage,
+            timings=None,
+            total_ms=total_ms,
+            status=response.status_code,
+        )
+        log.info("request_complete", **tel_doc)
+        asyncio.create_task(ship_request_complete(tel_doc))
 
         if response.status_code >= 400:
             try:

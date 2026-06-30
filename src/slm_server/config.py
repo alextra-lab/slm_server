@@ -10,7 +10,7 @@ class ModelDefinition(BaseModel):
     """Configuration for a single model server instance."""
 
     id: str = Field(..., description="Model identifier (used for routing)")
-    backend: Literal["mlx", "llamacpp"] = Field(..., description="Backend type")
+    backend: Literal["mlx", "llamacpp", "mlx-rerank"] = Field(..., description="Backend type")
     port: int = Field(..., ge=1024, le=65535, description="Port number for this model server")
     context_length: int | None = Field(
         None,
@@ -24,7 +24,7 @@ class ModelDefinition(BaseModel):
         "lm", "multimodal", "image-generation", "image-edit", "embeddings", "rerank", "whisper"
     ] = Field(
         "lm",
-        description="Type of model to run (default: lm). rerank: llamacpp + native llama-server only.",
+        description="Type of model to run (default: lm). rerank: backend llamacpp (native llama-server) or mlx-rerank (in-repo MLX server).",
     )
     host: str = Field("0.0.0.0", description="Host to run the server on (default: 0.0.0.0)")
     enable_auto_tool_choice: bool = Field(
@@ -90,6 +90,14 @@ class ModelDefinition(BaseModel):
     cache_type_v: str | None = Field(
         None, description="KV cache type for V (e.g. q8_0). Only used when backend is llamacpp."
     )
+    cache_ram: int | None = Field(
+        None,
+        description="Max host context/state cache size in MiB (llamacpp native --cache-ram; 0 disables, -1 unlimited). 0 suits stateless rerank. Only used when backend is llamacpp.",
+    )
+    kv_offload: bool | None = Field(
+        None,
+        description="Offload KV cache to GPU (llamacpp native --kv-offload/--no-kv-offload; default enabled). Set false for --no-kv-offload. Only used when backend is llamacpp.",
+    )
     flash_attn: bool | str | None = Field(
         None,
         description="Flash attention on/off (llamacpp; true or 'on'). Only used when backend is llamacpp.",
@@ -113,6 +121,10 @@ class ModelDefinition(BaseModel):
     spec_draft_n_max: int | None = Field(
         None,
         description="Max draft tokens for speculative decoding (llamacpp native --spec-draft-n-max). Only used when backend is llamacpp.",
+    )
+    verbose: bool | None = Field(
+        None,
+        description="Enable verbose llama-server logging (native --verbose). Only used when backend is llamacpp.",
     )
     model_path: str | None = Field(
         None, description="Optional path to model file (auto-discovered if not set)"
@@ -173,11 +185,14 @@ def validate_model_config(config: ModelConfig) -> list[str]:
     issues = []
 
     for role, model_def in config.models.items():
-        if model_def.model_type == "rerank" and model_def.backend != "llamacpp":
+        if model_def.model_type == "rerank" and model_def.backend not in ("llamacpp", "mlx-rerank"):
             issues.append(
                 f"{role}: model_type rerank is only supported with backend llamacpp "
-                "(native llama-server with --reranking; mlx-openai-server has no rerank mode)"
+                "(native llama-server --reranking) or mlx-rerank (in-repo MLX server)"
             )
+
+        if model_def.backend == "mlx-rerank" and model_def.model_type != "rerank":
+            issues.append(f"{role}: backend mlx-rerank requires model_type rerank")
 
         if model_def.model_type in ("embeddings", "rerank"):
             issues.extend(_non_lm_model_config_warnings(role, model_def))

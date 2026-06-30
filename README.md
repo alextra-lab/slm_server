@@ -60,7 +60,7 @@ Copy `config/models.yaml.example` to `config/models.yaml` and set your model pat
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
 | `id` | yes | — | Model identifier used for routing (must match `model` field in requests) |
-| `backend` | yes | — | `mlx` or `llamacpp` |
+| `backend` | yes | — | `mlx`, `llamacpp`, or `mlx-rerank` (in-repo MLX reranker server) |
 | `port` | yes | — | Port for this model's backend server (must be unique) |
 | `model_path` | yes | — | Local path to model file/directory, or Hugging Face model ID (MLX only for HF IDs) |
 | `default_timeout` | yes | — | Request timeout in seconds |
@@ -96,6 +96,8 @@ Copy `config/models.yaml.example` to `config/models.yaml` and set your model pat
 | `n_predict` | — | Maximum tokens to generate per request |
 | `cache_type_k` | — | KV cache type for K (e.g. `q8_0`, `f16`) |
 | `cache_type_v` | — | KV cache type for V (e.g. `q8_0`, `f16`) |
+| `cache_ram` | — | Max host context/state cache in MiB (`--cache-ram`; `0` disables, `-1` unlimited) — native `llama-server` only |
+| `kv_offload` | — | Offload KV cache to GPU (`true` → `--kv-offload`, `false` → `--no-kv-offload`; default enabled) — native `llama-server` only |
 | `flash_attn` | — | Flash attention (`true` / `false`) |
 | `kv_unified` | — | Unified KV cache — native `llama-server` only |
 | `fit` | — | `--fit` flag — native `llama-server` only |
@@ -103,6 +105,7 @@ Copy `config/models.yaml.example` to `config/models.yaml` and set your model pat
 | `cache_prompt` | — | Enable/disable prompt prefix caching (`true` → `--cache-prompt`, `false` → `--no-cache-prompt`) — native `llama-server` only |
 | `spec_type` | — | Speculative decoding type (e.g. `draft-mtp`) — native `llama-server` only |
 | `spec_draft_n_max` | — | Max draft tokens for speculative decoding (e.g. `2`) — native `llama-server` only |
+| `verbose` | — | Enable verbose `llama-server` logging (`--verbose`); stderr is redirected to `logs/llama-<id>-<port>.log` — native `llama-server` only |
 | `mmproj_path` | `null` | Path to multimodal projector `.gguf` — required when `model_type: multimodal` |
 
 ### Model Path
@@ -176,9 +179,12 @@ MLX embedding models are also supported: set `backend: mlx` and `model_type: emb
 
 ### `POST /v1/rerank`
 
-Reranking. Requires `model_type: rerank`, `backend: llamacpp`, and native `llama-server` on PATH. The backend is started with `--embedding --pooling rank --reranking`. The Python `llama_cpp.server` does not support rerank.
+Reranking. Requires `model_type: rerank` with one of two backends:
 
-Request body follows the [llama.cpp server rerank format](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md) (query + documents).
+- **`backend: llamacpp`** — native `llama-server` on PATH (GGUF models). Started with `--embedding --pooling rank --reranking`. The Python `llama_cpp.server` does not support rerank.
+- **`backend: mlx-rerank`** — in-repo MLX reranker server (`python -m slm_server mlx-rerank`) for MLX-format Qwen3-Reranker models (e.g. `mxfp8`/`bf16` safetensors). Scores each query/document pair with the official Qwen3-Reranker yes/no-logit method and returns the same response shape as `llama-server`.
+
+Both return results sorted by `relevance_score` descending; an optional `top_n` limits the count. Request body follows the [llama.cpp server rerank format](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md) (query + documents).
 
 ### `GET /v1/models`
 
