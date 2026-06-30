@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
+import structlog
 from fastapi.testclient import TestClient
 from httpx import ASGITransport, AsyncClient
 
@@ -79,6 +80,53 @@ def test_rerank_forwards_to_backend(router_client: TestClient) -> None:
     assert r.json()["model"] == "test/rerank-model"
     assert captured["url"] == "http://localhost:9998/v1/rerank"
     assert captured["json"] == body
+
+
+def test_routing_rerank_request_stamps_identity_headers(router_client: TestClient) -> None:
+    """FRE-701: routing_rerank_request carries trace/session/span from the request headers."""
+
+    async def fake_post(url: str, **kwargs: object) -> httpx.Response:
+        return httpx.Response(200, json={"results": [], "model": "test/rerank-model"})
+
+    app.state.http_client.post = fake_post  # type: ignore[method-assign]
+
+    with structlog.testing.capture_logs() as logs:
+        r = router_client.post(
+            "/v1/rerank",
+            json={"model": "test/rerank-model", "query": "q", "documents": ["a"]},
+            headers={"X-Trace-Id": "t1", "X-Span-Id": "s1", "X-Session-Id": "sess1"},
+        )
+
+    assert r.status_code == 200
+    events = [e for e in logs if e["event"] == "routing_rerank_request"]
+    assert len(events) == 1
+    e = events[0]
+    assert e["trace_id"] == "t1"
+    assert e["span_id"] == "s1"
+    assert e["session_id"] == "sess1"
+
+
+def test_routing_rerank_request_without_headers_logs_absent(router_client: TestClient) -> None:
+    """FRE-701: a request without identity headers still logs (values None), no error."""
+
+    async def fake_post(url: str, **kwargs: object) -> httpx.Response:
+        return httpx.Response(200, json={"results": [], "model": "test/rerank-model"})
+
+    app.state.http_client.post = fake_post  # type: ignore[method-assign]
+
+    with structlog.testing.capture_logs() as logs:
+        r = router_client.post(
+            "/v1/rerank",
+            json={"model": "test/rerank-model", "query": "q", "documents": ["a"]},
+        )
+
+    assert r.status_code == 200
+    events = [e for e in logs if e["event"] == "routing_rerank_request"]
+    assert len(events) == 1
+    e = events[0]
+    assert e["trace_id"] is None
+    assert e["span_id"] is None
+    assert e["session_id"] is None
 
 
 @pytest.fixture
