@@ -433,6 +433,39 @@ def build_mlx_command(
     return cmd
 
 
+def build_mlx_rerank_command(
+    model_path: Path | str,
+    port: int,
+    host: str = "0.0.0.0",
+    served_model_name: str | None = None,
+    context_length: int | None = None,
+) -> list[str]:
+    """Build command to launch the in-repo MLX rerank server (python -m slm_server mlx-rerank)."""
+    resolved = cast(Path, validate_path(model_path, allow_hf_model=False))
+    host = validate_host(host)
+    if not (1024 <= port <= 65535):
+        raise ValueError(f"Invalid port: {port}. Must be between 1024 and 65535")
+    if context_length is not None and context_length <= 0:
+        raise ValueError(f"Invalid context_length: {context_length}. Must be positive")
+    cmd = [
+        sys.executable,
+        "-m",
+        "slm_server",
+        "mlx-rerank",
+        "--model-path",
+        str(resolved),
+        "--port",
+        str(port),
+        "--host",
+        host,
+    ]
+    if served_model_name:
+        cmd.extend(["--served-model-name", served_model_name])
+    if context_length is not None:
+        cmd.extend(["--context-length", str(context_length)])
+    return cmd
+
+
 def find_native_llama_server() -> str | None:
     """Return path to native llama-server binary (e.g. from brew install llama.cpp), or None."""
     path = shutil.which("llama-server")
@@ -777,6 +810,14 @@ def start_model_server(model_def, config: ModelConfig) -> subprocess.Popen | Non
                 reasoning_parser=getattr(model_def, "reasoning_parser", None),
                 config_name=getattr(model_def, "config_name", None),
                 served_model_name=model_def.id,
+            )
+        elif model_def.backend == "mlx-rerank":
+            cmd = build_mlx_rerank_command(
+                model_path=Path(model_path) if not is_hf_model else model_path,
+                port=model_def.port,
+                host=getattr(model_def, "host", "0.0.0.0"),
+                served_model_name=model_def.id,
+                context_length=model_def.context_length,
             )
         elif model_def.backend == "llamacpp":
             # llama.cpp doesn't support Hugging Face model IDs - must be local path
