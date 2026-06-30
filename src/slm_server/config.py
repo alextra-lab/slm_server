@@ -10,7 +10,7 @@ class ModelDefinition(BaseModel):
     """Configuration for a single model server instance."""
 
     id: str = Field(..., description="Model identifier (used for routing)")
-    backend: Literal["mlx", "llamacpp"] = Field(..., description="Backend type")
+    backend: Literal["mlx", "llamacpp", "mlx-rerank"] = Field(..., description="Backend type")
     port: int = Field(..., ge=1024, le=65535, description="Port number for this model server")
     context_length: int | None = Field(
         None,
@@ -185,10 +185,10 @@ def validate_model_config(config: ModelConfig) -> list[str]:
     issues = []
 
     for role, model_def in config.models.items():
-        if model_def.model_type == "rerank" and model_def.backend != "llamacpp":
+        if model_def.model_type == "rerank" and model_def.backend not in ("llamacpp", "mlx-rerank"):
             issues.append(
                 f"{role}: model_type rerank is only supported with backend llamacpp "
-                "(native llama-server with --reranking; mlx-openai-server has no rerank mode)"
+                "(native llama-server --reranking) or mlx-rerank (in-repo MLX server)"
             )
 
         if model_def.model_type in ("embeddings", "rerank"):
