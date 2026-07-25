@@ -1065,11 +1065,18 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
         model_def = _get_model_definition(model_id, request.app.state.model_config)
         backend_url = _get_backend_url(model_def, "/v1/responses")
 
+        trace_id = request.headers.get("x-trace-id")
+        span_id = request.headers.get("x-span-id")
+        session_id = request.headers.get("x-session-id")
+
         log.info(
             "routing_responses_request",
             model_id=model_id,
             backend=model_def.backend,
             port=model_def.port,
+            trace_id=trace_id,
+            span_id=span_id,
+            session_id=session_id,
         )
 
         filtered_headers = _filtered_forward_headers(request)
@@ -1103,7 +1110,9 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
                     t0=stream_t0,
                     model_id=model_id,
                     model_def=model_def,
-                    emit_telemetry=False,
+                    trace_id=trace_id,
+                    span_id=span_id,
+                    session_id=session_id,
                 )
 
             await probe.aclose()
@@ -1135,8 +1144,37 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
                 t0=stream_t0,
                 model_id=model_id,
                 model_def=model_def,
-                emit_telemetry=False,
+                trace_id=trace_id,
+                span_id=span_id,
+                session_id=session_id,
             )
+
+        def _emit_responses_telemetry(response: httpx.Response, total_ms: float) -> None:
+            """Emit request_complete for a non-streaming /v1/responses reply."""
+            if response.headers.get("content-type", "").startswith("text/event-stream"):
+                usage, timings = _parse_sse_telemetry(response.content)
+            else:
+                try:
+                    usage = response.json().get("usage") or None
+                except Exception:  # noqa: BLE001 - malformed body must not break the request
+                    usage = None
+                timings = None
+            tel_doc = _build_request_telemetry(
+                trace_id=trace_id,
+                span_id=span_id,
+                session_id=session_id,
+                model_id=model_id,
+                backend=model_def.backend,
+                port=model_def.port,
+                usage=usage,
+                timings=timings,
+                total_ms=total_ms,
+                status=response.status_code,
+            )
+            log.info("request_complete", **tel_doc)
+            asyncio.create_task(ship_request_complete(tel_doc))
+
+        t0 = time.monotonic()
 
         try:
             # Try /v1/responses first
@@ -1148,6 +1186,7 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
             # 404 = endpoint doesn't exist, 422 = endpoint exists but doesn't accept format
             # Both indicate we should fall back to /v1/chat/completions
             if response.status_code not in (404, 422):
+                _emit_responses_telemetry(response, (time.monotonic() - t0) * 1000)
                 if response.status_code >= 400:
                     try:
                         error_detail = response.json()
@@ -1206,6 +1245,7 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
         response = await client.post(
             fallback_url, json=chat_body, headers=filtered_headers, timeout=timeout
         )
+        _emit_responses_telemetry(response, (time.monotonic() - t0) * 1000)
 
         if response.status_code >= 400:
             try:

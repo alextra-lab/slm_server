@@ -608,10 +608,14 @@ async def test_responses_streaming_falls_back_to_chat_on_404(
     assert b"Hi" in response.content
 
 
-async def test_responses_streaming_emits_no_telemetry(
+async def test_responses_streaming_emits_telemetry_with_trace_context(
     monkeypatch: pytest.MonkeyPatch, _telemetry_app_setup: ModelConfig
 ) -> None:
-    """This endpoint never emitted request_complete; the fix must not add it."""
+    """/v1/responses ships request_complete, joinable to the caller's trace.
+
+    This endpoint emitted nothing before; the trace headers were never even read,
+    so its documents would not have joined to gateway traces.
+    """
     captured: list[dict] = []
 
     async def fake_ship(doc: dict) -> None:
@@ -632,11 +636,59 @@ async def test_responses_streaming_emits_no_telemetry(
                 "input": "hi",
                 "stream": True,
             },
+            headers={"X-Trace-Id": "trace-resp", "X-Session-Id": "sess-resp"},
         )
 
     assert response.status_code == 200
     await asyncio.sleep(0)
-    assert captured == []
+
+    assert len(captured) == 1
+    doc = captured[0]
+    assert doc["trace_id"] == "trace-resp"
+    assert doc["session_id"] == "sess-resp"
+    assert doc["prompt_tokens"] == 100
+    assert doc["ttfb_ms"] is not None
+
+
+async def test_responses_non_streaming_emits_telemetry(
+    monkeypatch: pytest.MonkeyPatch, _telemetry_app_setup: ModelConfig
+) -> None:
+    """The non-streaming /v1/responses path was dark too — it ships now."""
+    captured: list[dict] = []
+
+    async def fake_ship(doc: dict) -> None:
+        captured.append(doc)
+
+    monkeypatch.setattr(router_module, "ship_request_complete", fake_ship)
+
+    fake_http = MagicMock()
+    fake_http.post = AsyncMock(
+        return_value=httpx.Response(
+            200,
+            json={"id": "resp-1", "output": [], "usage": {"prompt_tokens": 7}},
+            headers={"content-type": "application/json"},
+        )
+    )
+    app.state.http_client = fake_http
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app, raise_app_exceptions=True), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/v1/responses",
+            json={"model": "mlx-community/Qwen3.5-9B-8bit", "input": "hi"},
+            headers={"X-Trace-Id": "trace-nonstream"},
+        )
+
+    assert response.status_code == 200
+    await asyncio.sleep(0)
+
+    assert len(captured) == 1
+    doc = captured[0]
+    assert doc["trace_id"] == "trace-nonstream"
+    assert doc["prompt_tokens"] == 7
+    # Streaming-only fields stay None on the buffered path.
+    assert doc["ttfb_ms"] is None
 
 
 async def test_streaming_telemetry_records_ttfb_and_heartbeats(
