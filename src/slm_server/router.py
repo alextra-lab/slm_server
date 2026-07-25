@@ -423,20 +423,45 @@ async def _iter_with_heartbeat(response: httpx.Response) -> AsyncIterator[bytes]
             pending.cancel()
 
 
-async def _stream_chat_completion(
+async def _open_backend_stream(
     *,
     client: httpx.AsyncClient,
-    backend_url: str,
-    body_forward: dict[str, Any],
-    filtered_headers: dict[str, str],
+    url: str,
+    body: dict[str, Any],
+    headers: dict[str, str],
     timeout: httpx.Timeout,
-    trace_id: str | None,
-    span_id: str | None,
-    session_id: str | None,
+) -> httpx.Response:
+    """Send a request and return the response with its body still unread.
+
+    Status and headers are available immediately, so a caller can branch on the
+    status (e.g. the /v1/responses fallback) before committing to the body.
+
+    Args:
+        client: Shared pooled HTTP client.
+        url: Resolved backend URL.
+        body: Request body to forward.
+        headers: Headers to forward to the backend.
+        timeout: Per-request httpx timeout.
+
+    Returns:
+        An open streaming response. The caller owns closing it.
+    """
+    request = client.build_request("POST", url, json=body, headers=headers, timeout=timeout)
+    return await client.send(request, stream=True)
+
+
+async def _stream_backend_response(
+    *,
+    response: httpx.Response,
+    t0: float,
     model_id: str,
     model_def: ModelDefinition,
+    trace_id: str | None = None,
+    span_id: str | None = None,
+    session_id: str | None = None,
+    emit_telemetry: bool = True,
 ) -> JSONResponse | StreamingResponse:
-    """Proxy a streaming completion through to the caller without buffering it.
+    """Forward an open backend stream to the caller without buffering it.
 
     The buffering path (`client.post`) held the whole generation in memory before
     emitting a byte, so the caller's connection stayed silent for the entire turn
@@ -445,24 +470,25 @@ async def _stream_chat_completion(
     it starts.
 
     Args:
-        client: Shared pooled HTTP client.
-        backend_url: Resolved backend chat/completions URL.
-        body_forward: Request body to forward (timeout field already stripped).
-        filtered_headers: Headers to forward to the backend.
-        timeout: Per-request httpx timeout.
+        response: An open streaming response from `_open_backend_stream`.
+        t0: monotonic start time, for total_ms.
+        model_id: Requested model id.
+        model_def: Resolved model definition.
         trace_id: Caller trace id, for telemetry.
         span_id: Caller span id, for telemetry.
         session_id: Caller session id, for telemetry.
-        model_id: Requested model id.
-        model_def: Resolved model definition.
+        emit_telemetry: Whether to emit request_complete. False for endpoints
+            that have never emitted it, so this fix does not silently change
+            what lands in the telemetry index.
 
     Returns:
         A StreamingResponse over the backend SSE stream, or a JSONResponse if the
         backend answered with an error status.
     """
-    t0 = time.monotonic()
 
     def _emit_telemetry(usage: dict | None, timings: dict | None, status: int) -> None:
+        if not emit_telemetry:
+            return
         tel_doc = _build_request_telemetry(
             trace_id=trace_id,
             span_id=span_id,
@@ -477,11 +503,6 @@ async def _stream_chat_completion(
         )
         log.info("request_complete", **tel_doc)
         asyncio.create_task(ship_request_complete(tel_doc))
-
-    backend_request = client.build_request(
-        "POST", backend_url, json=body_forward, headers=filtered_headers, timeout=timeout
-    )
-    response = await client.send(backend_request, stream=True)
 
     if response.status_code >= 400:
         raw = await response.aread()
@@ -572,17 +593,22 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
         # Streaming requests are proxied through unbuffered so the caller's
         # connection never goes silent for the length of a generation (FRE-980).
         if body_forward.get("stream"):
-            return await _stream_chat_completion(
+            stream_t0 = time.monotonic()
+            backend_response = await _open_backend_stream(
                 client=client,
-                backend_url=backend_url,
-                body_forward=body_forward,
-                filtered_headers=filtered_headers,
+                url=backend_url,
+                body=body_forward,
+                headers=filtered_headers,
                 timeout=timeout,
+            )
+            return await _stream_backend_response(
+                response=backend_response,
+                t0=stream_t0,
+                model_id=model_id,
+                model_def=model_def,
                 trace_id=trace_id,
                 span_id=span_id,
                 session_id=session_id,
-                model_id=model_id,
-                model_def=model_def,
             )
 
         t0 = time.monotonic()
@@ -1004,6 +1030,61 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
         request_timeout_seconds = _resolve_backend_timeout_seconds(body_forward, model_def)
         body_forward.pop("timeout", None)
         timeout = httpx.Timeout(connect=10.0, read=request_timeout_seconds, write=30.0, pool=10.0)
+
+        # Streaming requests are proxied through unbuffered, same as
+        # /v1/chat/completions (FRE-980). The 404/422 fallback still works
+        # because send(stream=True) exposes the status before the body is read.
+        # Telemetry stays off here: this endpoint has never emitted
+        # request_complete, and the streaming fix should not change that.
+        if body_forward.get("stream"):
+            stream_t0 = time.monotonic()
+            probe = await _open_backend_stream(
+                client=client,
+                url=backend_url,
+                body=body_forward,
+                headers=filtered_headers,
+                timeout=timeout,
+            )
+            if probe.status_code not in (404, 422):
+                return await _stream_backend_response(
+                    response=probe,
+                    t0=stream_t0,
+                    model_id=model_id,
+                    model_def=model_def,
+                    emit_telemetry=False,
+                )
+
+            await probe.aclose()
+            log.info(
+                "responses_fallback_to_chat",
+                model_id=model_id,
+                backend=model_def.backend,
+                original_status=probe.status_code,
+                message=(
+                    "/v1/responses not supported or invalid format, "
+                    "converting to /v1/chat/completions"
+                ),
+            )
+            chat_body = _convert_responses_to_chat(body_forward)
+            if (
+                getattr(model_def, "chat_template_kwargs", None)
+                and "chat_template_kwargs" not in chat_body
+            ):
+                chat_body["chat_template_kwargs"] = model_def.chat_template_kwargs
+            fallback_response = await _open_backend_stream(
+                client=client,
+                url=_get_backend_url(model_def, "/v1/chat/completions"),
+                body=chat_body,
+                headers=filtered_headers,
+                timeout=timeout,
+            )
+            return await _stream_backend_response(
+                response=fallback_response,
+                t0=stream_t0,
+                model_id=model_id,
+                model_def=model_def,
+                emit_telemetry=False,
+            )
 
         try:
             # Try /v1/responses first
