@@ -19,6 +19,9 @@ _TELEMETRY_KEYS = {
     "trace_id", "span_id", "session_id", "model_id", "backend", "port",
     "prompt_tokens", "completion_tokens", "prefill_ms", "decode_ms",
     "prompt_n", "predicted_n", "cache_reuse", "total_ms", "status", "ts",
+    # Streaming-only signals — present but None for rerank, preserving the
+    # invariant that every endpoint ships an identical key set.
+    "ttfb_ms", "heartbeat_count", "client_disconnected",
 }
 
 

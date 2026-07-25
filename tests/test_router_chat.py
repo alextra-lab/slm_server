@@ -639,6 +639,120 @@ async def test_responses_streaming_emits_no_telemetry(
     assert captured == []
 
 
+async def test_streaming_telemetry_records_ttfb_and_heartbeats(
+    monkeypatch: pytest.MonkeyPatch, _telemetry_app_setup: ModelConfig
+) -> None:
+    """ttfb_ms and heartbeat_count make a silent backend visible in telemetry.
+
+    total_ms alone cannot distinguish a request that waited for a slot from one
+    that computed slowly; ttfb_ms against prefill_ms separates them.
+    """
+    monkeypatch.setattr(router_module, "_SSE_HEARTBEAT_INTERVAL_SECONDS", 0.05)
+    captured: list[dict] = []
+
+    async def fake_ship(doc: dict) -> None:
+        captured.append(doc)
+
+    monkeypatch.setattr(router_module, "ship_request_complete", fake_ship)
+
+    fake_http = _streaming_client(_streaming_response(_sse_stream_chunks(), first_delay=0.3))
+    app.state.http_client = fake_http
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app, raise_app_exceptions=True), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "mlx-community/Qwen3.5-9B-8bit",
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": True,
+            },
+        )
+
+    assert response.status_code == 200
+    await asyncio.sleep(0)
+
+    doc = captured[0]
+    # First content byte arrived only after the stall, not at t0.
+    assert doc["ttfb_ms"] >= 250
+    assert doc["ttfb_ms"] <= doc["total_ms"]
+    assert doc["heartbeat_count"] >= 1
+    assert doc["client_disconnected"] is False
+
+
+async def test_streaming_telemetry_ttfb_excludes_heartbeats(
+    monkeypatch: pytest.MonkeyPatch, _telemetry_app_setup: ModelConfig
+) -> None:
+    """Keep-alives must not be mistaken for the first content byte."""
+    monkeypatch.setattr(router_module, "_SSE_HEARTBEAT_INTERVAL_SECONDS", 5.0)
+    captured: list[dict] = []
+
+    async def fake_ship(doc: dict) -> None:
+        captured.append(doc)
+
+    monkeypatch.setattr(router_module, "ship_request_complete", fake_ship)
+
+    fake_http = _streaming_client(_streaming_response(_sse_stream_chunks()))
+    app.state.http_client = fake_http
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app, raise_app_exceptions=True), base_url="http://test"
+    ) as client:
+        await client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "mlx-community/Qwen3.5-9B-8bit",
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": True,
+            },
+        )
+
+    await asyncio.sleep(0)
+    doc = captured[0]
+    assert doc["heartbeat_count"] == 0
+    assert doc["ttfb_ms"] is not None
+
+
+async def test_non_streaming_telemetry_omits_streaming_fields(
+    monkeypatch: pytest.MonkeyPatch, _telemetry_app_setup: ModelConfig
+) -> None:
+    """Non-streaming requests keep the previous doc shape — fields present, None."""
+    captured: list[dict] = []
+
+    async def fake_ship(doc: dict) -> None:
+        captured.append(doc)
+
+    monkeypatch.setattr(router_module, "ship_request_complete", fake_ship)
+
+    fake_http = MagicMock()
+    fake_http.post = AsyncMock(
+        return_value=httpx.Response(
+            200,
+            content=_sse_body_with_timings(),
+            headers={"content-type": "text/event-stream"},
+        )
+    )
+    app.state.http_client = fake_http
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app, raise_app_exceptions=True), base_url="http://test"
+    ) as client:
+        await client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "mlx-community/Qwen3.5-9B-8bit",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+
+    await asyncio.sleep(0)
+    doc = captured[0]
+    assert doc["ttfb_ms"] is None
+    assert doc["heartbeat_count"] is None
+    assert doc["client_disconnected"] is None
+
+
 async def test_streaming_backend_error_returns_json_not_stream(
     _telemetry_app_setup: ModelConfig,
 ) -> None:

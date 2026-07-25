@@ -1,6 +1,7 @@
 """FastAPI routing service that routes requests to backend model servers based on model ID."""
 
 import asyncio
+import contextlib
 import json
 import time
 from collections.abc import AsyncIterator
@@ -357,12 +358,20 @@ def _build_request_telemetry(
     timings: dict | None,
     total_ms: float,
     status: int,
+    ttfb_ms: float | None = None,
+    heartbeat_count: int | None = None,
+    client_disconnected: bool | None = None,
 ) -> dict[str, object]:
     """Build the request_complete telemetry doc.
 
     Single source of the schema so every slm-server request_complete event is identical
     regardless of model or backend (chat, rerank, ...). Fields that don't apply to a given
     request type (e.g. decode/predicted for a reranker) are left None, never dropped.
+
+    The streaming fields default to None so non-streaming callers are unchanged.
+    `ttfb_ms` is the router-observed time to the first content byte; comparing it
+    against `prefill_ms` approximates how long a request waited for a backend slot,
+    which `total_ms` alone cannot distinguish from slow compute.
     """
     return {
         "trace_id": trace_id,
@@ -379,6 +388,9 @@ def _build_request_telemetry(
         "predicted_n": timings.get("predicted_n") if timings else None,
         "cache_reuse": timings.get("cache_n") if timings else None,
         "total_ms": round(total_ms, 1),
+        "ttfb_ms": round(ttfb_ms, 1) if ttfb_ms is not None else None,
+        "heartbeat_count": heartbeat_count,
+        "client_disconnected": client_disconnected,
         "status": status,
         "ts": datetime.now(UTC).isoformat(),
     }
@@ -486,7 +498,15 @@ async def _stream_backend_response(
         backend answered with an error status.
     """
 
-    def _emit_telemetry(usage: dict | None, timings: dict | None, status: int) -> None:
+    def _emit_telemetry(
+        usage: dict | None,
+        timings: dict | None,
+        status: int,
+        *,
+        ttfb_ms: float | None = None,
+        heartbeat_count: int | None = None,
+        client_disconnected: bool | None = None,
+    ) -> None:
         if not emit_telemetry:
             return
         tel_doc = _build_request_telemetry(
@@ -500,6 +520,9 @@ async def _stream_backend_response(
             timings=timings,
             total_ms=(time.monotonic() - t0) * 1000,
             status=status,
+            ttfb_ms=ttfb_ms,
+            heartbeat_count=heartbeat_count,
+            client_disconnected=client_disconnected,
         )
         log.info("request_complete", **tel_doc)
         asyncio.create_task(ship_request_complete(tel_doc))
@@ -529,15 +552,44 @@ async def _stream_backend_response(
     async def stream_response() -> AsyncIterator[bytes]:
         # Keep the body for telemetry only — usage/timings ride in the final chunks.
         body = bytearray()
+        heartbeats = 0
+        ttfb_ms: float | None = None
+        disconnected = False
         try:
             async for chunk in _iter_with_heartbeat(response):
-                if chunk is not _SSE_HEARTBEAT:
+                if chunk is _SSE_HEARTBEAT:
+                    heartbeats += 1
+                else:
+                    if ttfb_ms is None:
+                        ttfb_ms = (time.monotonic() - t0) * 1000
                     body.extend(chunk)
                 yield chunk
+        except asyncio.CancelledError:
+            # The caller went away mid-stream. Before FRE-980 this was the edge
+            # severing a silent connection and nothing here ever recorded it.
+            disconnected = True
+            log.warning(
+                "stream_client_disconnected",
+                model_id=model_id,
+                backend=model_def.backend,
+                port=model_def.port,
+                trace_id=trace_id,
+                bytes_forwarded=len(body),
+                heartbeat_count=heartbeats,
+            )
+            raise
         finally:
-            await response.aclose()
+            with contextlib.suppress(Exception):
+                await response.aclose()
             usage, timings = _parse_sse_telemetry(bytes(body))
-            _emit_telemetry(usage, timings, response.status_code)
+            _emit_telemetry(
+                usage,
+                timings,
+                response.status_code,
+                ttfb_ms=ttfb_ms,
+                heartbeat_count=heartbeats,
+                client_disconnected=disconnected,
+            )
 
     return StreamingResponse(
         stream_response(),
