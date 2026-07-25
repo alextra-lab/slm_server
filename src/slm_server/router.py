@@ -3,6 +3,7 @@
 import asyncio
 import json
 import time
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
@@ -383,6 +384,168 @@ def _build_request_telemetry(
     }
 
 
+_SSE_HEARTBEAT_INTERVAL_SECONDS = 15.0
+_SSE_HEARTBEAT = b": keep-alive\n\n"
+
+
+async def _iter_with_heartbeat(response: httpx.Response) -> AsyncIterator[bytes]:
+    """Yield backend chunks, filling silent gaps with SSE comment keep-alives.
+
+    A backend prefilling a large context emits nothing for the duration, so an
+    intermediary proxy sees an idle connection and severs it. SSE comments are
+    ignored by conformant clients, so they hold the connection open without
+    perturbing the stream.
+
+    Args:
+        response: An open streaming response from the backend.
+
+    Yields:
+        Backend chunks verbatim, interleaved with keep-alive comments.
+    """
+    iterator = response.aiter_bytes().__aiter__()
+    pending: asyncio.Future[bytes] | None = None
+    try:
+        while True:
+            if pending is None:
+                pending = asyncio.ensure_future(iterator.__anext__())
+            done, _ = await asyncio.wait({pending}, timeout=_SSE_HEARTBEAT_INTERVAL_SECONDS)
+            if not done:
+                yield _SSE_HEARTBEAT
+                continue
+            settled, pending = pending, None
+            try:
+                chunk = settled.result()
+            except StopAsyncIteration:
+                return
+            yield chunk
+    finally:
+        if pending is not None:
+            pending.cancel()
+
+
+async def _open_backend_stream(
+    *,
+    client: httpx.AsyncClient,
+    url: str,
+    body: dict[str, Any],
+    headers: dict[str, str],
+    timeout: httpx.Timeout,
+) -> httpx.Response:
+    """Send a request and return the response with its body still unread.
+
+    Status and headers are available immediately, so a caller can branch on the
+    status (e.g. the /v1/responses fallback) before committing to the body.
+
+    Args:
+        client: Shared pooled HTTP client.
+        url: Resolved backend URL.
+        body: Request body to forward.
+        headers: Headers to forward to the backend.
+        timeout: Per-request httpx timeout.
+
+    Returns:
+        An open streaming response. The caller owns closing it.
+    """
+    request = client.build_request("POST", url, json=body, headers=headers, timeout=timeout)
+    return await client.send(request, stream=True)
+
+
+async def _stream_backend_response(
+    *,
+    response: httpx.Response,
+    t0: float,
+    model_id: str,
+    model_def: ModelDefinition,
+    trace_id: str | None = None,
+    span_id: str | None = None,
+    session_id: str | None = None,
+    emit_telemetry: bool = True,
+) -> JSONResponse | StreamingResponse:
+    """Forward an open backend stream to the caller without buffering it.
+
+    The buffering path (`client.post`) held the whole generation in memory before
+    emitting a byte, so the caller's connection stayed silent for the entire turn
+    and an upstream proxy timed it out (FRE-980). Here chunks are forwarded as
+    they arrive, and telemetry is emitted once the stream ends rather than before
+    it starts.
+
+    Args:
+        response: An open streaming response from `_open_backend_stream`.
+        t0: monotonic start time, for total_ms.
+        model_id: Requested model id.
+        model_def: Resolved model definition.
+        trace_id: Caller trace id, for telemetry.
+        span_id: Caller span id, for telemetry.
+        session_id: Caller session id, for telemetry.
+        emit_telemetry: Whether to emit request_complete. False for endpoints
+            that have never emitted it, so this fix does not silently change
+            what lands in the telemetry index.
+
+    Returns:
+        A StreamingResponse over the backend SSE stream, or a JSONResponse if the
+        backend answered with an error status.
+    """
+
+    def _emit_telemetry(usage: dict | None, timings: dict | None, status: int) -> None:
+        if not emit_telemetry:
+            return
+        tel_doc = _build_request_telemetry(
+            trace_id=trace_id,
+            span_id=span_id,
+            session_id=session_id,
+            model_id=model_id,
+            backend=model_def.backend,
+            port=model_def.port,
+            usage=usage,
+            timings=timings,
+            total_ms=(time.monotonic() - t0) * 1000,
+            status=status,
+        )
+        log.info("request_complete", **tel_doc)
+        asyncio.create_task(ship_request_complete(tel_doc))
+
+    if response.status_code >= 400:
+        raw = await response.aread()
+        await response.aclose()
+        try:
+            error_detail: Any = json.loads(raw)
+        except json.JSONDecodeError:
+            error_detail = raw.decode(errors="replace")[:500]
+        log.warning(
+            "backend_error_response",
+            status_code=response.status_code,
+            model_id=model_id,
+            backend=model_def.backend,
+            port=model_def.port,
+            error_detail=error_detail,
+        )
+        _emit_telemetry(None, None, response.status_code)
+        return JSONResponse(
+            content=error_detail if isinstance(error_detail, dict) else {"error": error_detail},
+            status_code=response.status_code,
+            headers=_filter_response_headers(response.headers),
+        )
+
+    async def stream_response() -> AsyncIterator[bytes]:
+        # Keep the body for telemetry only — usage/timings ride in the final chunks.
+        body = bytearray()
+        try:
+            async for chunk in _iter_with_heartbeat(response):
+                if chunk is not _SSE_HEARTBEAT:
+                    body.extend(chunk)
+                yield chunk
+        finally:
+            await response.aclose()
+            usage, timings = _parse_sse_telemetry(bytes(body))
+            _emit_telemetry(usage, timings, response.status_code)
+
+    return StreamingResponse(
+        stream_response(),
+        media_type="text/event-stream",
+        headers=_sse_headers(response.headers),
+    )
+
+
 @app.post("/v1/chat/completions", response_model=None)
 async def chat_completions(request: Request) -> JSONResponse | StreamingResponse:
     """Route chat completions requests to appropriate backend."""
@@ -426,6 +589,27 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
 
         # Override timeout for this request based on model config
         timeout = httpx.Timeout(connect=10.0, read=request_timeout_seconds, write=30.0, pool=10.0)
+
+        # Streaming requests are proxied through unbuffered so the caller's
+        # connection never goes silent for the length of a generation (FRE-980).
+        if body_forward.get("stream"):
+            stream_t0 = time.monotonic()
+            backend_response = await _open_backend_stream(
+                client=client,
+                url=backend_url,
+                body=body_forward,
+                headers=filtered_headers,
+                timeout=timeout,
+            )
+            return await _stream_backend_response(
+                response=backend_response,
+                t0=stream_t0,
+                model_id=model_id,
+                model_def=model_def,
+                trace_id=trace_id,
+                span_id=span_id,
+                session_id=session_id,
+            )
 
         t0 = time.monotonic()
         response = await client.post(
@@ -846,6 +1030,61 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
         request_timeout_seconds = _resolve_backend_timeout_seconds(body_forward, model_def)
         body_forward.pop("timeout", None)
         timeout = httpx.Timeout(connect=10.0, read=request_timeout_seconds, write=30.0, pool=10.0)
+
+        # Streaming requests are proxied through unbuffered, same as
+        # /v1/chat/completions (FRE-980). The 404/422 fallback still works
+        # because send(stream=True) exposes the status before the body is read.
+        # Telemetry stays off here: this endpoint has never emitted
+        # request_complete, and the streaming fix should not change that.
+        if body_forward.get("stream"):
+            stream_t0 = time.monotonic()
+            probe = await _open_backend_stream(
+                client=client,
+                url=backend_url,
+                body=body_forward,
+                headers=filtered_headers,
+                timeout=timeout,
+            )
+            if probe.status_code not in (404, 422):
+                return await _stream_backend_response(
+                    response=probe,
+                    t0=stream_t0,
+                    model_id=model_id,
+                    model_def=model_def,
+                    emit_telemetry=False,
+                )
+
+            await probe.aclose()
+            log.info(
+                "responses_fallback_to_chat",
+                model_id=model_id,
+                backend=model_def.backend,
+                original_status=probe.status_code,
+                message=(
+                    "/v1/responses not supported or invalid format, "
+                    "converting to /v1/chat/completions"
+                ),
+            )
+            chat_body = _convert_responses_to_chat(body_forward)
+            if (
+                getattr(model_def, "chat_template_kwargs", None)
+                and "chat_template_kwargs" not in chat_body
+            ):
+                chat_body["chat_template_kwargs"] = model_def.chat_template_kwargs
+            fallback_response = await _open_backend_stream(
+                client=client,
+                url=_get_backend_url(model_def, "/v1/chat/completions"),
+                body=chat_body,
+                headers=filtered_headers,
+                timeout=timeout,
+            )
+            return await _stream_backend_response(
+                response=fallback_response,
+                t0=stream_t0,
+                model_id=model_id,
+                model_def=model_def,
+                emit_telemetry=False,
+            )
 
         try:
             # Try /v1/responses first

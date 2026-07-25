@@ -369,3 +369,298 @@ async def test_url_unset_no_ship_call(
     assert response.status_code == 200
     # When URL is unset the real ship_request_complete is a no-op — no httpx POST
     # This test verifies the router still succeeds (the telemetry unit test covers the no-op)
+
+
+# ─── FRE-980: SSE pass-through streaming + prefill heartbeat ──────────────────
+
+
+class _LazyByteStream(httpx.AsyncByteStream):
+    """Async byte stream that yields chunks lazily, optionally stalling first.
+
+    Models a backend that accepts the request and then goes silent while it
+    prefills — the condition that produced the Cloudflare 524.
+    """
+
+    def __init__(self, chunks: list[bytes], first_delay: float = 0.0) -> None:
+        self._chunks = chunks
+        self._first_delay = first_delay
+
+    async def __aiter__(self):
+        for index, chunk in enumerate(self._chunks):
+            if index == 0 and self._first_delay:
+                await asyncio.sleep(self._first_delay)
+            yield chunk
+
+
+def _sse_stream_chunks() -> list[bytes]:
+    """The body from _sse_body_with_timings(), split into separate wire chunks."""
+    return [part + b"\n\n" for part in _sse_body_with_timings().split(b"\n\n") if part.strip()]
+
+
+def _streaming_client(response: httpx.Response) -> MagicMock:
+    fake_http = MagicMock()
+    fake_http.build_request = MagicMock(return_value=MagicMock())
+    fake_http.send = AsyncMock(return_value=response)
+    return fake_http
+
+
+def _streaming_response(chunks: list[bytes], first_delay: float = 0.0) -> httpx.Response:
+    return httpx.Response(
+        200,
+        headers={"content-type": "text/event-stream"},
+        stream=_LazyByteStream(chunks, first_delay=first_delay),
+    )
+
+
+async def test_streaming_request_passes_through_instead_of_buffering(
+    _telemetry_app_setup: ModelConfig,
+) -> None:
+    """A stream=True request must use send(stream=True), never the buffering post().
+
+    Regression guard for FRE-980: client.post() buffered the whole generation
+    before emitting a byte, so Cloudflare saw silence for the turn and 524'd.
+    """
+    fake_http = _streaming_client(_streaming_response(_sse_stream_chunks()))
+    app.state.http_client = fake_http
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app, raise_app_exceptions=True), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "mlx-community/Qwen3.5-9B-8bit",
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": True,
+            },
+        )
+
+    assert response.status_code == 200
+    assert fake_http.send.await_args.kwargs["stream"] is True
+    assert not fake_http.post.called
+    assert b"Hi" in response.content
+
+
+async def test_streaming_emits_heartbeat_while_backend_is_silent(
+    monkeypatch: pytest.MonkeyPatch, _telemetry_app_setup: ModelConfig
+) -> None:
+    """Silence longer than the interval must produce SSE comment keep-alives."""
+    monkeypatch.setattr(router_module, "_SSE_HEARTBEAT_INTERVAL_SECONDS", 0.05)
+
+    fake_http = _streaming_client(_streaming_response(_sse_stream_chunks(), first_delay=0.3))
+    app.state.http_client = fake_http
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app, raise_app_exceptions=True), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "mlx-community/Qwen3.5-9B-8bit",
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": True,
+            },
+        )
+
+    body = response.content
+    assert body.startswith(b":"), "heartbeat must precede the first backend chunk"
+    # Heartbeats are SSE comments, so real data still arrives intact.
+    assert b"Hi" in body
+
+
+async def test_streaming_heartbeat_absent_when_backend_is_prompt(
+    monkeypatch: pytest.MonkeyPatch, _telemetry_app_setup: ModelConfig
+) -> None:
+    """No stall means no keep-alive noise on the wire."""
+    monkeypatch.setattr(router_module, "_SSE_HEARTBEAT_INTERVAL_SECONDS", 5.0)
+
+    fake_http = _streaming_client(_streaming_response(_sse_stream_chunks()))
+    app.state.http_client = fake_http
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app, raise_app_exceptions=True), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "mlx-community/Qwen3.5-9B-8bit",
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": True,
+            },
+        )
+
+    assert not response.content.startswith(b":")
+
+
+async def test_streaming_telemetry_emitted_after_stream_completes(
+    monkeypatch: pytest.MonkeyPatch, _telemetry_app_setup: ModelConfig
+) -> None:
+    """usage/timings must survive the switch to pass-through streaming."""
+    captured: list[dict] = []
+
+    async def fake_ship(doc: dict) -> None:
+        captured.append(doc)
+
+    monkeypatch.setattr(router_module, "ship_request_complete", fake_ship)
+
+    fake_http = _streaming_client(_streaming_response(_sse_stream_chunks()))
+    app.state.http_client = fake_http
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app, raise_app_exceptions=True), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "mlx-community/Qwen3.5-9B-8bit",
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": True,
+            },
+            headers={"X-Trace-Id": "trace-980"},
+        )
+
+    assert response.status_code == 200
+    await asyncio.sleep(0)  # drain create_task queue
+
+    assert len(captured) == 1
+    doc = captured[0]
+    assert doc["trace_id"] == "trace-980"
+    assert doc["prompt_tokens"] == 100
+    assert doc["completion_tokens"] == 10
+    assert doc["prefill_ms"] == 1200.0
+    assert doc["cache_reuse"] == 80
+    assert doc["status"] == 200
+
+
+def _sequenced_streaming_client(responses: list[httpx.Response]) -> MagicMock:
+    """Streaming client that returns a different response per send() call."""
+    fake_http = MagicMock()
+    fake_http.build_request = MagicMock(return_value=MagicMock())
+    fake_http.send = AsyncMock(side_effect=responses)
+    return fake_http
+
+
+def _sent_urls(fake_http: MagicMock) -> list[str]:
+    return [call.args[1] for call in fake_http.build_request.call_args_list]
+
+
+# /v1/responses shares the same streaming machinery, so its tests live here
+# alongside the helpers rather than in a near-duplicate module.
+
+
+async def test_responses_streaming_passes_through_instead_of_buffering(
+    _telemetry_app_setup: ModelConfig,
+) -> None:
+    """/v1/responses must stream through too — it had the same buffering bug."""
+    fake_http = _streaming_client(_streaming_response(_sse_stream_chunks()))
+    app.state.http_client = fake_http
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app, raise_app_exceptions=True), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/v1/responses",
+            json={
+                "model": "mlx-community/Qwen3.5-9B-8bit",
+                "input": "hi",
+                "stream": True,
+            },
+        )
+
+    assert response.status_code == 200
+    assert fake_http.send.await_args.kwargs["stream"] is True
+    assert not fake_http.post.called
+    assert b"Hi" in response.content
+
+
+async def test_responses_streaming_falls_back_to_chat_on_404(
+    _telemetry_app_setup: ModelConfig,
+) -> None:
+    """The 404 fallback must survive the switch to unbuffered streaming.
+
+    send(stream=True) exposes the status before the body is read, so the probe
+    can still be abandoned in favour of /v1/chat/completions.
+    """
+    probe = httpx.Response(
+        404, headers={"content-type": "application/json"}, stream=_LazyByteStream([b"{}"])
+    )
+    fallback = _streaming_response(_sse_stream_chunks())
+    fake_http = _sequenced_streaming_client([probe, fallback])
+    app.state.http_client = fake_http
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app, raise_app_exceptions=True), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/v1/responses",
+            json={
+                "model": "mlx-community/Qwen3.5-9B-8bit",
+                "input": "hi",
+                "stream": True,
+            },
+        )
+
+    assert response.status_code == 200
+    urls = _sent_urls(fake_http)
+    assert len(urls) == 2
+    assert urls[0].endswith("/v1/responses")
+    assert urls[1].endswith("/v1/chat/completions")
+    assert b"Hi" in response.content
+
+
+async def test_responses_streaming_emits_no_telemetry(
+    monkeypatch: pytest.MonkeyPatch, _telemetry_app_setup: ModelConfig
+) -> None:
+    """This endpoint never emitted request_complete; the fix must not add it."""
+    captured: list[dict] = []
+
+    async def fake_ship(doc: dict) -> None:
+        captured.append(doc)
+
+    monkeypatch.setattr(router_module, "ship_request_complete", fake_ship)
+
+    fake_http = _streaming_client(_streaming_response(_sse_stream_chunks()))
+    app.state.http_client = fake_http
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app, raise_app_exceptions=True), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/v1/responses",
+            json={
+                "model": "mlx-community/Qwen3.5-9B-8bit",
+                "input": "hi",
+                "stream": True,
+            },
+        )
+
+    assert response.status_code == 200
+    await asyncio.sleep(0)
+    assert captured == []
+
+
+async def test_streaming_backend_error_returns_json_not_stream(
+    _telemetry_app_setup: ModelConfig,
+) -> None:
+    """A 4xx/5xx on a streaming request still surfaces as a JSON error body."""
+    error_response = httpx.Response(
+        503,
+        headers={"content-type": "application/json"},
+        stream=_LazyByteStream([b'{"error": "backend down"}']),
+    )
+    fake_http = _streaming_client(error_response)
+    app.state.http_client = fake_http
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app, raise_app_exceptions=True), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "mlx-community/Qwen3.5-9B-8bit",
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": True,
+            },
+        )
+
+    assert response.status_code == 503
