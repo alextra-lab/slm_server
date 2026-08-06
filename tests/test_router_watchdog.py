@@ -135,6 +135,45 @@ def test_client_errors_are_never_blamed_on_the_backend(
     assert wd.read_restart_requests(watchdog_settings.request_dir) == []
 
 
+def test_a_backend_degrading_into_429s_trips_a_restart(
+    client: TestClient, watchdog_settings: wd.WatchdogSettings
+) -> None:
+    """429 describes the backend's condition, not the caller's request.
+
+    Under the previous `status < 500` split this was scored as health, which
+    also reset the failure streak — so this backend could have answered 429
+    indefinitely and never tripped.
+    """
+
+    async def saturated(url: str, **_kwargs: object) -> httpx.Response:
+        return httpx.Response(429, json={"error": "too many requests"})
+
+    app.state.http_client.post = saturated  # type: ignore[method-assign]
+
+    _chat(client)
+    _chat(client)
+
+    pending = wd.read_restart_requests(watchdog_settings.request_dir)
+    assert len(pending) == 1
+    assert pending[0].reason == "saturated"
+
+
+def test_a_malformed_request_never_blames_the_backend(
+    client: TestClient, watchdog_settings: wd.WatchdogSettings
+) -> None:
+    """422 is the caller's fault and must stay health, even in a long run."""
+
+    async def unprocessable(url: str, **_kwargs: object) -> httpx.Response:
+        return httpx.Response(422, json={"error": "unprocessable"})
+
+    app.state.http_client.post = unprocessable  # type: ignore[method-assign]
+
+    for _ in range(6):
+        _chat(client)
+
+    assert wd.read_restart_requests(watchdog_settings.request_dir) == []
+
+
 def test_backend_5xx_counts_as_a_failure(
     client: TestClient, watchdog_settings: wd.WatchdogSettings
 ) -> None:

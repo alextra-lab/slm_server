@@ -247,13 +247,36 @@ A restart is triggered by:
 
 | Signal | Trips after |
 |---|---|
-| Backend unreachable (connection refused) | 2 consecutive |
-| Backend timeout | 2 consecutive |
+| Backend unreachable (503, connection refused) | 2 consecutive |
+| Backend timeout (504, 408) | 2 consecutive |
 | Backend 5xx | 2 consecutive |
+| Backend saturated (429) or too-early (425) | 2 consecutive |
 | No first byte on a streaming request for 300s | 1 — see below |
 | Backend process exited | immediately |
 
-Client 4xx never counts: a malformed request says nothing about model health.
+Statuses are classified explicitly rather than by a `status < 500` threshold,
+because some 4xx describe the *backend's condition* and some describe the
+*caller's request*:
+
+| Verdict | Statuses | Effect |
+|---|---|---|
+| health | 2xx, 400, 404, 422 | resets the failure streak |
+| failure | 408, 425, 429, all 5xx | counts toward a restart |
+| ignore | everything else | neither — an unknown code is not evidence of health |
+
+A threshold got this wrong in a way that mattered. Scoring 429 or 408 as health
+did not merely fail to count them: recording health **resets** the consecutive
+failure streak, so a backend degrading into 429s could answer them indefinitely
+and never trip, while also erasing the record of genuine failures on either side
+of it. The third bucket exists for the same reason — an unrecognised status must
+not reset a streak either.
+
+That hole was invisible to the telemetry, and could only ever have been
+invisible: the router's error paths emitted nothing, so all 798 recorded
+requests are status 200 and no 4xx or 5xx had ever been observed at all. The
+watchdog's own detection is the first thing that makes those paths visible, so
+its classification could not be validated against history — only reasoned about
+and then tested. The emit gap was live until this change landed.
 
 The 300s stall threshold is calibrated, not guessed. Across 798 recorded requests,
 router-observed time to first byte peaked at 30.4s and backend-reported prefill at

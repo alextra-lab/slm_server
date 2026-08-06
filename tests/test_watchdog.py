@@ -128,6 +128,59 @@ def test_a_stall_trips_on_its_own() -> None:
 
 
 # --------------------------------------------------------------------------
+# Status classification
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("status", [200, 201, 204, 299])
+def test_success_statuses_are_health(status: int) -> None:
+    assert wd.classify_status(status) == ("health", None)
+
+
+@pytest.mark.parametrize("status", [400, 404, 422])
+def test_caller_fault_4xx_is_health(status: int) -> None:
+    """The request was wrong, not the model. Counting these restarts a good backend."""
+    assert wd.classify_status(status) == ("health", None)
+
+
+@pytest.mark.parametrize(
+    ("status", "kind"),
+    [(408, "timeout"), (425, "server_error"), (429, "saturated")],
+)
+def test_backend_fault_4xx_is_a_failure(status: int, kind: str) -> None:
+    """Regression: a `status < 500` split scored these as health.
+
+    That did not merely miss them — recording health *resets* the consecutive
+    failure streak, so a backend degrading into 429s or 408s could never
+    accumulate to a restart no matter how long it lasted.
+    """
+    assert wd.classify_status(status) == ("failure", kind)
+
+
+@pytest.mark.parametrize(
+    ("status", "kind"),
+    [(500, "server_error"), (502, "server_error"), (503, "unreachable"), (504, "timeout")],
+)
+def test_5xx_is_a_failure(status: int, kind: str) -> None:
+    assert wd.classify_status(status) == ("failure", kind)
+
+
+@pytest.mark.parametrize("status", [401, 403, 409, 418, 451, 301])
+def test_unrecognised_statuses_are_ignored(status: int) -> None:
+    """Neither trips nor resets: an unknown code is not evidence of health."""
+    assert wd.classify_status(status) == ("ignore", None)
+
+
+def test_an_ignored_status_does_not_erase_a_failure_streak() -> None:
+    """The whole point of the third bucket."""
+    tracker = wd.BackendHealthTracker(failure_threshold=2)
+    assert tracker.record_failure(8502, "timeout") is False
+    # a 403 arrives between two backend failures and must not reset anything
+    assert wd.classify_status(403)[0] == "ignore"
+    assert tracker.record_failure(8502, "timeout") is True
+
+
+# --------------------------------------------------------------------------
 # Stall detection
 # --------------------------------------------------------------------------
 

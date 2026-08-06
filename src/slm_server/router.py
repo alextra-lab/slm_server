@@ -16,7 +16,7 @@ from structlog import get_logger
 
 from slm_server.config import ModelConfig, ModelDefinition, load_model_config
 from slm_server.telemetry import ship_request_complete
-from slm_server.watchdog import RouterWatchdog
+from slm_server.watchdog import RouterWatchdog, classify_status
 from slm_server.watchdog import load_settings as load_watchdog_settings
 
 log = get_logger(__name__)
@@ -87,12 +87,6 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="SLM Server Router", version="0.2.0", lifespan=lifespan)
 
 
-# Status codes the router itself produces for a backend that could not serve:
-# 503 from ConnectError (process gone), 504 from TimeoutException (no answer).
-_UNREACHABLE_STATUS = 503
-_TIMEOUT_STATUS = 504
-
-
 @app.middleware("http")
 async def _watchdog_outcome_middleware(request: Request, call_next):
     """Record whether each proxied request was actually served.
@@ -104,8 +98,11 @@ async def _watchdog_outcome_middleware(request: Request, call_next):
     far (unknown model, malformed body) are not a backend's fault and are
     ignored here.
 
-    4xx is likewise ignored: a bad request says nothing about the model's
-    health, and counting it would restart a working backend.
+    Which statuses mean what is `classify_status`, deliberately not a
+    `status < 500` threshold. Some 4xx describe the backend's condition rather
+    than the caller's request, and under a threshold those were scored as
+    health — which did not merely miss them, it *reset the failure streak*, so
+    a backend degrading into 429s or 408s could never accumulate to a trip.
     """
     response = await call_next(request)
     port = getattr(request.state, "backend_port", None)
@@ -113,15 +110,11 @@ async def _watchdog_outcome_middleware(request: Request, call_next):
     if port is None or watchdog is None:
         return response
 
-    status = response.status_code
-    if status < 500:
+    verdict, kind = classify_status(response.status_code)
+    if verdict == "health":
         watchdog.record_success(port)
-    elif status == _UNREACHABLE_STATUS:
-        watchdog.record_failure(port, "unreachable", "backend refused connection")
-    elif status == _TIMEOUT_STATUS:
-        watchdog.record_failure(port, "timeout", "backend did not answer in time")
-    else:
-        watchdog.record_failure(port, "server_error", f"backend returned {status}")
+    elif verdict == "failure" and kind is not None:
+        watchdog.record_failure(port, kind, f"backend returned {response.status_code}")
     return response
 
 

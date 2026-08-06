@@ -55,9 +55,56 @@ import structlog
 
 log = structlog.get_logger(__name__)
 
-FailureKind = Literal["unreachable", "timeout", "server_error", "stall"]
+FailureKind = Literal["unreachable", "timeout", "server_error", "saturated", "stall"]
+
+StatusVerdict = Literal["health", "failure", "ignore"]
+
+# 4xx that describe the *caller's request*. The model is fine; the request was
+# not. Counting these would restart a healthy backend because someone sent a
+# malformed body.
+CALLER_FAULT_STATUSES: frozenset[int] = frozenset({400, 404, 422})
+
+# 4xx that describe the *backend's condition* despite being client-class codes.
+# These are the reason a `status < 500` split is wrong rather than merely
+# imprecise: under it, a backend answering 429 or 408 was recorded as healthy
+# and therefore *reset the consecutive-failure streak*, erasing the evidence of
+# real failures on either side of it. A degrading backend could never
+# accumulate to a trip.
+BACKEND_FAULT_STATUSES: frozenset[int] = frozenset({408, 425, 429})
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def classify_status(status: int) -> tuple[StatusVerdict, FailureKind | None]:
+    """Decide what an HTTP status says about a backend's health.
+
+    Three outcomes rather than two. "ignore" exists so an unrecognised status
+    neither trips a restart nor resets a streak — an unknown code is not
+    evidence of health, and treating it as such is the bug this replaces.
+
+    Args:
+        status: HTTP status the backend (or the router on its behalf) produced.
+
+    Returns:
+        The verdict, and the failure kind when the verdict is "failure".
+    """
+    if 200 <= status < 300:
+        return "health", None
+    if status in CALLER_FAULT_STATUSES:
+        return "health", None
+    if status == 408:
+        return "failure", "timeout"
+    if status == 429:
+        return "failure", "saturated"
+    if status == 425:
+        return "failure", "server_error"
+    if status == 503:
+        return "failure", "unreachable"
+    if status == 504:
+        return "failure", "timeout"
+    if status >= 500:
+        return "failure", "server_error"
+    return "ignore", None
 
 
 def _env_float(name: str, default: float) -> float:
