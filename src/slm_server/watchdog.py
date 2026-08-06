@@ -634,18 +634,40 @@ class BackendSupervisor:
         return pid
 
     def _reap_port_strays(self, port: int) -> None:
-        """SIGKILL anything still listening on a backend port."""
+        """SIGKILL anything still *listening* on a backend port.
+
+        `-sTCP:LISTEN` is load-bearing, not a refinement. Plain `lsof -ti
+        tcp:<port>` matches every socket involving that port number, which
+        includes the *clients* connected to it — and the router holds pooled
+        keep-alive connections to exactly the backend it just failed against.
+        Verified on the running stack: `lsof -ti tcp:8502` returned the backend
+        (35559) and the router (35572), so reaping without this filter would
+        SIGKILL the router on the first restart and destroy the very process
+        that detects failures. Only the backend listens on its own port.
+
+        The self/parent guard is belt-and-braces for the same class of mistake:
+        the supervisor must never kill itself or the launcher that owns it.
+        """
         try:
             result = subprocess.run(
-                ["lsof", "-ti", f"tcp:{port}"], capture_output=True, text=True, timeout=10
+                ["lsof", "-ti", f"tcp:{port}", "-sTCP:LISTEN"],
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
         except (OSError, subprocess.SubprocessError) as exc:
             log.warning("watchdog_lsof_failed", port=port, error=str(exc))
             return
+
+        protected = {os.getpid(), os.getppid()}
         for line in result.stdout.split():
             try:
                 stray = int(line)
             except ValueError:
+                continue
+            if stray in protected:
+                log.error("watchdog_refusing_to_kill_self", port=port, pid=stray)
+                append_event(self.settings.log_path, "stray_kill_refused", port=port, pid=stray)
                 continue
             log.warning("watchdog_killing_port_stray", port=port, pid=stray)
             append_event(self.settings.log_path, "port_stray_killed", port=port, pid=stray)

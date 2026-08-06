@@ -8,6 +8,7 @@ restarted forever.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -333,6 +334,76 @@ def test_restart_of_an_unknown_port_is_ignored(settings: wd.WatchdogSettings) ->
     wd.write_restart_request(settings.request_dir, wd.RestartRequest(9999, "m", "stall", "", "t"))
     assert supervisor.check_requests() == [9999]
     assert made == []
+
+
+# --------------------------------------------------------------------------
+# Stray reaping — which processes may be killed
+# --------------------------------------------------------------------------
+
+
+def test_stray_reaping_only_considers_listeners(
+    settings: wd.WatchdogSettings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: plain `lsof -ti tcp:PORT` also matches *clients* of that port.
+
+    The router holds pooled keep-alive connections to the backend it just failed
+    against, so on the running stack `lsof -ti tcp:8502` returned both the
+    backend (35559) and the router (35572). Reaping that set would SIGKILL the
+    router on the very first restart. Only listeners may be considered.
+    """
+    seen: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess:
+        seen.append(cmd)
+        return subprocess.CompletedProcess(args=cmd, returncode=1, stdout="", stderr="")
+
+    monkeypatch.setattr(wd.subprocess, "run", fake_run)
+
+    supervisor, _made = _supervisor(settings, [])
+    supervisor._reap_port_strays(8502)
+
+    assert seen, "lsof was never invoked"
+    assert "-sTCP:LISTEN" in seen[0], f"selector would match clients too: {seen[0]}"
+
+
+def test_stray_reaping_never_kills_the_supervisor_itself(
+    settings: wd.WatchdogSettings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Even if lsof somehow names us, we must not kill ourselves or our parent."""
+    killed: list[int] = []
+
+    def fake_run(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess:
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=0, stdout=f"{os.getpid()}\n{os.getppid()}\n", stderr=""
+        )
+
+    monkeypatch.setattr(wd.subprocess, "run", fake_run)
+    monkeypatch.setattr(wd.os, "kill", lambda pid, sig: killed.append(pid))
+
+    supervisor, _made = _supervisor(settings, [])
+    supervisor._reap_port_strays(8502)
+
+    assert killed == []
+    refused = [e for e in _events(settings.log_path) if e["event"] == "stray_kill_refused"]
+    assert len(refused) == 2
+
+
+def test_a_genuine_stray_listener_is_killed(
+    settings: wd.WatchdogSettings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The guard must not defeat the purpose: real strays still get reaped."""
+    killed: list[int] = []
+
+    def fake_run(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess:
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="98765\n", stderr="")
+
+    monkeypatch.setattr(wd.subprocess, "run", fake_run)
+    monkeypatch.setattr(wd.os, "kill", lambda pid, sig: killed.append(pid))
+
+    supervisor, _made = _supervisor(settings, [])
+    supervisor._reap_port_strays(8502)
+
+    assert killed == [98765]
 
 
 # --------------------------------------------------------------------------
