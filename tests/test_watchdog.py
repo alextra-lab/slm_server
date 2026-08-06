@@ -399,6 +399,23 @@ def test_an_abandoned_backend_is_not_restarted_again(settings: wd.WatchdogSettin
     assert len(made) == before
 
 
+def test_startup_logs_every_tunable_in_effect(settings: wd.WatchdogSettings) -> None:
+    """The running configuration must be answerable from the log alone.
+
+    `startup_grace_seconds` was previously absent while its neighbours were
+    logged, so the line read as complete and the one value it omitted got
+    assumed rather than checked — and it is among the most consequential.
+    """
+    supervisor, _made = _supervisor(settings, [])
+    supervisor.register(8502, "reasoning", _StubModelDef(), FakePopen(alive=True))
+    supervisor.run(should_continue=lambda: False)
+
+    started = next(e for e in _events(settings.log_path) if e["event"] == "supervisor_started")
+    for field in wd.WatchdogSettings().as_log_fields():
+        assert field in started, f"{field} missing from supervisor_started"
+    assert started["startup_grace_seconds"] == settings.startup_grace_seconds
+
+
 def test_supervision_loop_stops_once_everything_is_abandoned(
     settings: wd.WatchdogSettings,
 ) -> None:

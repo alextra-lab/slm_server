@@ -66,12 +66,7 @@ async def lifespan(app: FastAPI):
     sweep_task = (
         asyncio.create_task(_watchdog_sweep_loop(app)) if watchdog_settings.enabled else None
     )
-    log.info(
-        "watchdog_initialised",
-        enabled=watchdog_settings.enabled,
-        failure_threshold=watchdog_settings.failure_threshold,
-        stall_seconds=watchdog_settings.stall_seconds,
-    )
+    log.info("watchdog_initialised", **watchdog_settings.as_log_fields())
 
     yield
 

@@ -172,6 +172,30 @@ class WatchdogSettings:
     request_dir: Path = _REPO_ROOT / "logs" / "watchdog" / "requests"
     log_path: Path = _REPO_ROOT / "logs" / "watchdog.jsonl"
 
+    def as_log_fields(self) -> dict[str, object]:
+        """Every tunable actually in effect, for the startup log line.
+
+        Emitted whole rather than field by field so the running configuration
+        is answerable from the log alone. A partial line is worse than none: it
+        reads as complete, so a value it happens to omit gets assumed rather
+        than checked — and the omitted one is the one that surprises you.
+
+        Returns:
+            The effective settings, JSON-serialisable.
+        """
+        return {
+            "enabled": self.enabled,
+            "failure_threshold": self.failure_threshold,
+            "stall_seconds": self.stall_seconds,
+            "sweep_interval_seconds": self.sweep_interval_seconds,
+            "max_restarts": self.max_restarts,
+            "restart_window_seconds": self.restart_window_seconds,
+            "restart_cooldown_seconds": self.restart_cooldown_seconds,
+            "startup_grace_seconds": self.startup_grace_seconds,
+            "request_dir": str(self.request_dir),
+            "log_path": str(self.log_path),
+        }
+
 
 def load_settings() -> WatchdogSettings:
     """Build settings from `SLM_WATCHDOG_*` environment variables.
@@ -206,8 +230,12 @@ def load_settings() -> WatchdogSettings:
 # --------------------------------------------------------------------------
 
 
-def append_event(log_path: Path, event: str, **fields: object) -> None:
+def append_event(log_path: Path, event: str, /, **fields: object) -> None:
     """Append one JSON line to the watchdog log.
+
+    The first two parameters are positional-only so a field named `log_path` or
+    `event` can be logged without colliding with them — `as_log_fields()`
+    carries exactly such a key.
 
     Fail-soft: a watchdog that crashes the thing it supervises is worse than one
     that loses a log line.
@@ -951,9 +979,7 @@ class BackendSupervisor:
             self.settings.log_path,
             "supervisor_started",
             ports=sorted(self._backends),
-            failure_threshold=self.settings.failure_threshold,
-            stall_seconds=self.settings.stall_seconds,
-            max_restarts=self.settings.max_restarts,
+            **self.settings.as_log_fields(),
         )
         while should_continue() and self.live_count > 0:
             self.poll_once()

@@ -321,9 +321,14 @@ Two limitations, accepted rather than hidden:
  "old_pid":35559,"new_pid":41220,"attempt":1}
 ```
 
-Events: `backend_failure`, `restart_requested`, `backend_exited`, `restart_started`,
-`restart_succeeded`, `restart_failed`, `port_stray_killed`, `backend_abandoned`,
-`waiting_for_model_path`, `supervisor_started`, `supervisor_stopped`.
+Events: `backend_failure`, `restart_requested`, `stale_request_discarded`,
+`backend_exited`, `backend_not_running`, `restart_started`, `restart_succeeded`,
+`restart_failed`, `port_stray_killed`, `stray_kill_refused`, `model_path_missing`,
+`backend_abandoned`, `supervisor_started`, `supervisor_stopped`.
+
+`supervisor_started` carries every tunable actually in effect, so the running
+configuration is answerable from the log alone rather than inferred from when
+the process happened to start.
 
 Because the router's error paths never emitted telemetry, backend failures were not
 recorded anywhere durable before this — this log is the first measurement of how

@@ -16,7 +16,13 @@ echo -e "${BLUE}🛑 Stopping SLM Server...${NC}"
 kill_port() {
     local port=$1
     local name=$2
-    local pid=$(lsof -ti:$port 2>/dev/null)
+    # -sTCP:LISTEN, not a bare port match. `lsof -ti:PORT` also returns the
+    # *clients* connected to that port, so killing by port could kill whatever
+    # happened to be talking to a backend rather than the backend itself. This
+    # was verified on the running stack for the identical bug in the watchdog's
+    # stray reaper: `lsof -ti tcp:8502` returned both llama-server and the
+    # router holding a keep-alive connection to it.
+    local pid=$(lsof -ti:$port -sTCP:LISTEN 2>/dev/null)
     
     if [ -n "$pid" ]; then
         echo -e "${YELLOW}Stopping $name on port $port (PID: $pid)...${NC}"
@@ -70,6 +76,17 @@ echo ""
 echo -e "${BLUE}🔄 Stopping routing service...${NC}"
 kill_port 8000 "Router"
 
+# Stop the supervisor BEFORE the backends it supervises (FRE-241). The launcher
+# restarts any backend it finds dead, so killing backends first raced it: a
+# sweep landing in that window resurrected a backend we had just asked to stop.
+# The trailing llama-server sweep did clean that up, which made the old order
+# correct by accident rather than by design. Killing the supervisor first
+# removes the race instead of tidying up after it — and its SIGTERM handler
+# terminates its own children on the way out, so this does most of the work.
+echo ""
+echo -e "${BLUE}🛑 Stopping backend supervisor...${NC}"
+kill_pattern "slm_server backends" "slm_server backends launcher"
+
 # Stop backend model servers. Ports and names are read from models.yaml so this
 # block never goes stale when the model lineup changes. If the read fails (e.g. uv
 # unavailable), the catch-all kill_pattern calls below still reap every backend.
@@ -112,7 +129,6 @@ kill_pattern "uvicorn.*slm_server" "uvicorn (slm_server)"
 # `uv run ... python -m slm_server backends/router` wrappers (and their children)
 # that survive when start.sh is terminated early — kill_port only reaps whatever
 # holds the listening socket, leaving these behind.
-kill_pattern "slm_server backends" "slm_server backends launcher"
 kill_pattern "slm_server router" "slm_server router launcher"
 
 # Clean up native llama.cpp model servers (orphans that lost their port survive
@@ -127,7 +143,7 @@ all_stopped=true
 
 # Check ports
 for port in 8000 $BACKEND_PORTS; do
-    if lsof -ti:$port > /dev/null 2>&1; then
+    if lsof -ti:$port -sTCP:LISTEN > /dev/null 2>&1; then
         echo -e "${RED}❌ Port $port still in use${NC}"
         all_stopped=false
     fi
