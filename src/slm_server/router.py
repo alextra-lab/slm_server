@@ -110,6 +110,10 @@ async def _watchdog_outcome_middleware(request: Request, call_next):
         watchdog.record_success(port)
     elif verdict == "failure" and kind is not None:
         watchdog.record_failure(port, kind, f"backend returned {response.status_code}")
+    else:
+        # Neither counted nor reset — but recorded, so a status the classifier
+        # has no opinion about cannot vanish. See record_unclassified.
+        watchdog.record_unclassified(port, response.status_code)
     return response
 
 

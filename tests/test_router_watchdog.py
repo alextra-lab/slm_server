@@ -7,6 +7,7 @@ it decides not.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import httpx
@@ -197,6 +198,35 @@ def test_requests_that_never_reached_a_backend_are_not_counted(
     for _ in range(5):
         client.post("/v1/chat/completions", json={"model": "nope", "messages": []})
 
+    assert wd.read_restart_requests(watchdog_settings.request_dir) == []
+
+
+def test_an_unclassified_status_is_recorded_rather_than_vanishing(
+    client: TestClient, watchdog_settings: wd.WatchdogSettings
+) -> None:
+    """Only `failure` used to leave a trace, which made the log directional.
+
+    It could expose a restart that should not have happened but never a failure
+    that should have been counted and was not — absence of evidence reading as
+    evidence of absence. That is how the 429 mis-classification survived.
+    """
+
+    async def teapot(url: str, **_kwargs: object) -> httpx.Response:
+        return httpx.Response(418, json={"error": "unexpected"})
+
+    app.state.http_client.post = teapot  # type: ignore[method-assign]
+    _chat(client)
+
+    events = [
+        json.loads(line)
+        for line in watchdog_settings.log_path.read_text().splitlines()
+        if line.strip()
+    ]
+    unclassified = [e for e in events if e["event"] == "unclassified_status"]
+    assert len(unclassified) == 1
+    assert unclassified[0]["status"] == 418
+    assert unclassified[0]["port"] == 8502
+    # and it must still neither trip nor reset
     assert wd.read_restart_requests(watchdog_settings.request_dir) == []
 
 

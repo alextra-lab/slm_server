@@ -530,6 +530,36 @@ class RouterWatchdog:
         if tripped:
             self._request_restart(port, kind, detail)
 
+    def record_unclassified(self, port: int, status: int) -> None:
+        """Record a status the classifier had no opinion about.
+
+        Of the three verdicts only `failure` used to leave a trace: health is
+        every successful request and is deliberately not logged, and `ignore`
+        returned silently. That made the log directional — it can expose a
+        restart that should not have happened, but never a failure that should
+        have been counted and was not. Absence of evidence read as evidence of
+        absence.
+
+        Which is precisely how the 429 mis-classification survived: nothing in
+        Elasticsearch (814 of 815 documents in the month to 2026-08-06 are
+        status 200) and nothing here could have shown it. It was caught because
+        someone happened to be watching stdout.
+
+        An unrecognised status is by definition a surprise and is rare, so
+        recording it costs nothing and gives the next one somewhere to appear.
+        Health stays unlogged: that is the common case and would swamp the file.
+        """
+        if not self.settings.enabled:
+            return
+        log.warning("watchdog_unclassified_status", port=port, status=status)
+        append_event(
+            self.settings.log_path,
+            "unclassified_status",
+            port=port,
+            model_id=self._model_ids.get(port),
+            status=status,
+        )
+
     def _request_restart(self, port: int, kind: FailureKind, detail: str) -> None:
         """Publish a restart request for a backend."""
         request = RestartRequest(

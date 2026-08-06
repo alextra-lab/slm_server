@@ -321,7 +321,7 @@ Two limitations, accepted rather than hidden:
  "old_pid":35559,"new_pid":41220,"attempt":1}
 ```
 
-Events: `backend_failure`, `restart_requested`, `stale_request_discarded`,
+Events: `backend_failure`, `unclassified_status`, `restart_requested`, `stale_request_discarded`,
 `backend_exited`, `backend_not_running`, `restart_started`, `restart_succeeded`,
 `restart_failed`, `port_stray_killed`, `stray_kill_refused`, `model_path_missing`,
 `backend_abandoned`, `supervisor_started`, `supervisor_stopped`.
@@ -329,6 +329,32 @@ Events: `backend_failure`, `restart_requested`, `stale_request_discarded`,
 `supervisor_started` carries every tunable actually in effect, so the running
 configuration is answerable from the log alone rather than inferred from when
 the process happened to start.
+
+Of the three classification verdicts, `failure` and `ignore` are logged and
+`health` is not — health is every successful request and would swamp the file.
+That asymmetry is deliberate and it fixes a directional blind spot: previously
+only failures were recorded, so a status wrongly classified as health produced
+silence, and silence is indistinguishable from nothing having gone wrong. The
+log could reveal a restart that should not have happened but never a failure
+that should have been counted and was not. `unclassified_status` gives the next
+surprising status somewhere to appear.
+
+### Server output
+
+`./start.sh` tees its whole run to `logs/start.out` (rotated past 10MB), while
+still printing live to the terminal. Before this, the router's stdout was the
+only place backend errors appeared at all and it was persisted nowhere — the
+sole copy was the scrollback of whichever terminal started the server, lost on
+the next restart. Elasticsearch cannot substitute: it holds 815 documents for
+the month to 2026-08-06, of which 814 are status 200, because the error paths
+emitted nothing.
+
+```bash
+./scripts/slm-logs.sh              # server output, prettified
+./scripts/slm-logs.sh watchdog     # restart decisions only
+./scripts/slm-logs.sh all          # both, interleaved
+./scripts/slm-logs.sh raw          # unformatted
+```
 
 Because the router's error paths never emitted telemetry, backend failures were not
 recorded anywhere durable before this — this log is the first measurement of how

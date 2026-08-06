@@ -20,13 +20,20 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_DIR="$(cd "$SCRIPT_DIR/.." && pwd)/logs"
 MODE="${1:-server}"
 
-# Prefer the LaunchAgent's log, fall back to whatever a manual ./start.sh wrote.
-server_logs() {
-    local found=()
-    for candidate in "$LOG_DIR/launchd.out" "$LOG_DIR/launchd.err" "$LOG_DIR/fre241-start.out" "$LOG_DIR/start.out"; do
-        [ -f "$candidate" ] && found+=("$candidate")
-    done
-    printf '%s\n' "${found[@]}"
+# start.sh tees its whole run here. This used to name four candidates, three of
+# which nothing has ever written — two belonged to the withdrawn LaunchAgent and
+# one was a scratch file from a test run — so the default mode could not display
+# anything. It also expanded an empty array under `set -u`, which on macOS's
+# /bin/bash 3.2 aborts with "unbound variable" rather than degrading. Verified:
+# this host reports 3.2.57 and does raise it.
+SERVER_LOG="$LOG_DIR/start.out"
+
+require_server_log() {
+    if [ ! -f "$SERVER_LOG" ]; then
+        echo "No server log yet: $SERVER_LOG" >&2
+        echo "It is written by ./start.sh — start the server, or use 'watchdog' mode." >&2
+        exit 1
+    fi
 }
 
 prettify() {
@@ -61,16 +68,16 @@ case "$MODE" in
         tail -n 50 -F "$LOG_DIR/watchdog.jsonl" | prettify
         ;;
     raw)
-        # shellcheck disable=SC2046
-        tail -n 100 -F $(server_logs)
+        require_server_log
+        tail -n 100 -F "$SERVER_LOG"
         ;;
     all)
+        require_server_log
         touch "$LOG_DIR/watchdog.jsonl"
-        # shellcheck disable=SC2046
-        tail -n 50 -F $(server_logs) "$LOG_DIR/watchdog.jsonl" | prettify
+        tail -n 50 -F "$SERVER_LOG" "$LOG_DIR/watchdog.jsonl" | prettify
         ;;
     server|*)
-        # shellcheck disable=SC2046
-        tail -n 100 -F $(server_logs) | prettify
+        require_server_log
+        tail -n 100 -F "$SERVER_LOG" | prettify
         ;;
 esac
