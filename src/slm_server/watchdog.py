@@ -9,12 +9,21 @@ it: `/health` returns a hardcoded string for the router itself, and
 
 So responsiveness is judged from the router's own errors on real traffic:
 
-* **unreachable** — `httpx.ConnectError`; the backend is gone. Fails fast.
-* **timeout** — `httpx.TimeoutException`; the request outlived its budget.
-* **server_error** — the backend answered 5xx. Client 4xx is the caller's fault
-  and is deliberately not counted.
+* **unreachable** — `httpx.ConnectError` or 503; the backend is gone.
+* **timeout** — `httpx.TimeoutException`, 504 or 408.
+* **saturated** — 429; the backend is refusing work rather than failing at it.
+* **server_error** — any other 5xx, or 425.
 * **stall** — a request has been in flight past `stall_seconds` without a single
   byte coming back. This is the signal that catches a wedge quickly; see below.
+
+Which status means which is `classify_status`, and it is deliberately not a
+`status < 500` split. Some 4xx describe the caller's request (400, 404, 422 —
+the model is fine) and some describe the backend's condition (408, 425, 429).
+Scoring the latter as health did not merely miss them: health *resets* the
+consecutive-failure streak, so a backend degrading into 429s could answer them
+indefinitely without tripping while erasing the record of real failures around
+it. Unrecognised statuses are ignored outright — neither counted nor reset,
+because an unknown code is not evidence of health.
 
 Two thresholds, because the two signals carry different weight:
 
@@ -148,9 +157,6 @@ class WatchdogSettings:
             is large. Erring generous is cheap here: during the grace period
             detection is only *delayed*, since the router keeps re-tripping and
             the first trip past the window is serviced.
-        mount_wait_seconds: How long to wait for a model path to appear before
-            launching anyway. Covers the external volume not being mounted yet
-            after a reboot.
         request_dir: Directory holding pending restart requests.
         log_path: JSONL file recording every watchdog decision.
     """
@@ -163,7 +169,6 @@ class WatchdogSettings:
     restart_window_seconds: float = 600.0
     restart_cooldown_seconds: float = 10.0
     startup_grace_seconds: float = 90.0
-    mount_wait_seconds: float = 120.0
     request_dir: Path = _REPO_ROOT / "logs" / "watchdog" / "requests"
     log_path: Path = _REPO_ROOT / "logs" / "watchdog.jsonl"
 
@@ -191,7 +196,6 @@ def load_settings() -> WatchdogSettings:
         restart_window_seconds=_env_float("SLM_WATCHDOG_RESTART_WINDOW_SECONDS", 600.0),
         restart_cooldown_seconds=_env_float("SLM_WATCHDOG_RESTART_COOLDOWN_SECONDS", 10.0),
         startup_grace_seconds=_env_float("SLM_WATCHDOG_STARTUP_GRACE_SECONDS", 90.0),
-        mount_wait_seconds=_env_float("SLM_WATCHDOG_MOUNT_WAIT_SECONDS", 120.0),
         request_dir=Path(request_dir) if request_dir else defaults.request_dir,
         log_path=Path(log_path) if log_path else defaults.log_path,
     )
@@ -682,34 +686,27 @@ class BackendSupervisor:
             attempts=len(entry.attempts),
         )
 
-    def wait_for_model_path(self, model_def: object) -> None:
-        """Block until the model file exists, bounded by `mount_wait_seconds`.
+    def _note_missing_model_path(self, model_def: object) -> None:
+        """Record that a model file is absent, without waiting for it.
 
-        Models live on an external volume. After a reboot the launcher can start
-        before the volume mounts, and a launch attempted then fails for a reason
-        that resolves itself seconds later.
+        This replaced a bounded wait. The wait was sized for an unattended boot
+        racing the external volume to mount, and that scenario no longer
+        exists — the server is started by hand, after the volume is mounted.
 
-        Called only from the restart path, never from initial startup. Waiting
-        in the startup loop blocked it for up to `mount_wait_seconds` per
-        missing model, which outlasted start.sh's readiness check and let one
-        bad path tear down the entire stack. Here the wait happens in the
-        background supervision loop, where the restart bound already applies.
+        What remains is the volume being pulled mid-session, and no duration is
+        defensible for it: remounting is a manual human action, so its latency
+        is unbounded. Any timer is simply a guess about when a person will
+        notice, and every second of it is spent looking busy while reporting
+        nothing. So the path is checked, the absence is recorded, and the
+        launch is allowed to fail immediately — the bound then abandons it with
+        the reason on record and the launcher exits non-zero, which is what
+        actually gets a human's attention.
         """
         raw_path = getattr(model_def, "model_path", None)
-        if not raw_path:
+        if not raw_path or Path(str(raw_path)).exists():
             return
-        path = Path(str(raw_path))
-        if path.exists():
-            return
-        deadline = time.monotonic() + self.settings.mount_wait_seconds
-        log.info("watchdog_waiting_for_model_path", path=str(path))
-        append_event(self.settings.log_path, "waiting_for_model_path", path=str(path))
-        while time.monotonic() < deadline:
-            self._sleep(2.0)
-            if path.exists():
-                append_event(self.settings.log_path, "model_path_appeared", path=str(path))
-                return
-        append_event(self.settings.log_path, "model_path_still_missing", path=str(path))
+        log.error("watchdog_model_path_missing", path=str(raw_path))
+        append_event(self.settings.log_path, "model_path_missing", path=str(raw_path))
 
     def _kill(self, port: int, process: subprocess.Popen | None) -> int | None:
         """Stop a backend process, escalating to SIGKILL, and reap port strays.
@@ -828,7 +825,7 @@ class BackendSupervisor:
         )
 
         self._sleep(self.settings.restart_cooldown_seconds)
-        self.wait_for_model_path(entry.model_def)
+        self._note_missing_model_path(entry.model_def)
         process = self._start_fn(entry.model_def)
         entry.process = process
         if process is not None:

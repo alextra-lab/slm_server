@@ -1080,13 +1080,12 @@ def main() -> None:
             port=model_def.port,
             backend=model_def.backend,
         )
-        # No mount wait here, deliberately. Waiting in this serial loop blocked
-        # startup for up to mount_wait_seconds *per* missing model, which
-        # outlasted start.sh's readiness check: start.sh gave up, killed the
-        # launcher mid-wait, and took the whole stack down over one bad path —
-        # orphaning already-started children and never starting the router.
-        # A missing path now fails fast and is retried by the supervisor, which
-        # does the waiting in the background under its own restart bound.
+        # Nothing blocks here. An earlier version waited in this serial loop
+        # for a missing model path, which outlasted start.sh's readiness check:
+        # start.sh gave up, killed the launcher mid-wait, and took the whole
+        # stack down over one bad path — orphaning already-started children and
+        # never starting the router. A missing path now fails immediately and
+        # the supervisor retries it under the restart bound.
         process = start_model_server(model_def, config)
         # Registered either way: a backend that failed to start still needs
         # supervising, or nothing retries it and it stays dead silently. The
@@ -1110,12 +1109,10 @@ def main() -> None:
     log.info("startup_summary", attempted=attempted, started=len(processes), failed=failed)
 
     if not processes:
-        # Deliberately not sys.exit(1) any more. A non-zero exit makes the
-        # LaunchAgent's KeepAlive relaunch us, so a config that cannot start
-        # would churn forever at the launchd layer — the same unbounded retry
-        # the supervisor's bound exists to prevent, merely moved up a level and
-        # throttled. Fall through to supervision instead: it retries under the
-        # bound, abandons with a reason, and exits 0 so launchd leaves it alone.
+        # Not an immediate exit: fall through to supervision so a transient
+        # cause (a path that appears a moment later) gets the bounded retry
+        # rather than one attempt. The exit code is decided below, once
+        # supervision has actually finished.
         log.error("no_servers_started", attempted=attempted, detail="entering bounded retry")
     else:
         log.info("all_servers_started", count=len(processes), total_attempted=attempted)
@@ -1125,12 +1122,26 @@ def main() -> None:
     try:
         if watchdog_settings.enabled:
             supervisor.run()
-            # Exit 0 deliberately. Every backend hit its restart bound, so this
-            # is a considered stop, not a crash — and the LaunchAgent's
-            # KeepAlive is SuccessfulExit=false, so a zero exit is what stops
-            # launchd relaunching us into the churn AC-3 forbids.
+            # Non-zero. `run()` returns only when every backend has exhausted
+            # its restart bound and been abandoned, so reaching here means the
+            # launcher is exiting with nothing serving — a failure by any
+            # reading.
+            #
+            # This previously exited 0, for a launchd-specific reason: a
+            # non-zero exit would make KeepAlive relaunch and churn against a
+            # config that cannot start. That apparatus is gone, and with it the
+            # rationale. What the rationale left behind is worse than neutral:
+            # the consumer of this exit code is now a human's shell, and exit 0
+            # tells them the server started when no model is running. That is
+            # the same defect this ticket exists to remove — a mechanism
+            # reporting success with nothing behind it — only aimed at a person
+            # about to assume the server is up.
+            #
+            # The bound itself is unaffected: attempts still stop, and the
+            # reason is still on record. Only how that outcome is reported
+            # changes.
             log.error("all_backends_abandoned", detail="see logs/watchdog.jsonl for the reason")
-            sys.exit(0)
+            sys.exit(1)
         else:
             log.info("watchdog_disabled_waiting_only")
             for model_id, process in processes:

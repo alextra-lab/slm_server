@@ -70,7 +70,6 @@ def settings(tmp_path: Path) -> wd.WatchdogSettings:
         max_restarts=3,
         restart_window_seconds=600.0,
         restart_cooldown_seconds=0.0,
-        mount_wait_seconds=0.0,
         request_dir=tmp_path / "requests",
         log_path=tmp_path / "watchdog.jsonl",
     )
@@ -415,18 +414,24 @@ def test_supervision_loop_stops_once_everything_is_abandoned(
     assert {"supervisor_started", "supervisor_stopped"} <= events
 
 
-def test_restart_waits_for_an_unmounted_model_path(
+def test_a_missing_model_path_is_recorded_and_not_waited_on(
     settings: wd.WatchdogSettings, tmp_path: Path
 ) -> None:
-    """Models live on an external volume that may not be mounted yet at boot."""
+    """Remounting is a manual human action, so no timed wait can be right.
+
+    Any duration is a guess about when a person will notice, spent looking busy
+    while reporting nothing. The absence is recorded and the launch fails
+    immediately, so the bound abandons it with the reason on record.
+    """
     missing = _StubModelDef(model_path=str(tmp_path / "not-mounted" / "model.gguf"))
     supervisor, made = _supervisor(settings, [])
     supervisor.register(8502, "reasoning", missing, FakePopen(alive=False))
 
     assert supervisor.restart(8502, "process_exited") is True
     events = {e["event"] for e in _events(settings.log_path)}
-    assert "waiting_for_model_path" in events
-    assert len(made) == 1, "it still launches after the wait rather than giving up silently"
+    assert "model_path_missing" in events
+    assert "waiting_for_model_path" not in events, "it must not wait on a human"
+    assert len(made) == 1
 
 
 def test_restart_of_an_unknown_port_is_ignored(settings: wd.WatchdogSettings) -> None:

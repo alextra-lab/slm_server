@@ -3,6 +3,8 @@
 import signal
 from pathlib import Path
 
+import pytest
+
 from slm_server import start_backends
 from slm_server import watchdog as wd
 from slm_server.config import ModelConfig, ModelDefinition
@@ -41,6 +43,37 @@ def _model() -> ModelDefinition:
     )
 
 
+def test_main_exits_non_zero_when_every_backend_is_abandoned(monkeypatch, tmp_path: Path) -> None:
+    """Nothing serving must not be reported as success.
+
+    This exit code previously was 0, chosen so a LaunchAgent's KeepAlive would
+    not relaunch into churn. That apparatus is gone. The consumer is now a
+    human's shell, and exit 0 there says "started" while no model is running —
+    the same report-success-with-nothing-behind-it defect the watchdog exists
+    to remove, aimed at a person about to assume the server is up.
+    """
+    cfg = ModelConfig(models={"reasoning": _model()})
+    monkeypatch.setattr(start_backends, "load_model_config", lambda: cfg)
+    monkeypatch.setattr(start_backends, "start_model_server", lambda _m, _c: None)
+    monkeypatch.setattr(signal, "signal", lambda sig, handler: None)
+    monkeypatch.setattr(
+        start_backends,
+        "load_watchdog_settings",
+        lambda: wd.WatchdogSettings(
+            sweep_interval_seconds=0.0,
+            restart_cooldown_seconds=0.0,
+            max_restarts=2,
+            request_dir=tmp_path / "requests",
+            log_path=tmp_path / "watchdog.jsonl",
+        ),
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        start_backends.main()
+
+    assert excinfo.value.code == 1, "a launcher exiting with nothing serving is a failure"
+
+
 def test_main_cleans_up_started_servers_on_sigterm(monkeypatch, tmp_path: Path) -> None:
     handlers = {}
     process = FakeProcess()
@@ -58,7 +91,6 @@ def test_main_cleans_up_started_servers_on_sigterm(monkeypatch, tmp_path: Path) 
         lambda: wd.WatchdogSettings(
             sweep_interval_seconds=0.0,
             restart_cooldown_seconds=0.0,
-            mount_wait_seconds=0.0,
             request_dir=tmp_path / "requests",
             log_path=tmp_path / "watchdog.jsonl",
         ),

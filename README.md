@@ -305,6 +305,11 @@ Two limitations, accepted rather than hidden:
 - `check_requests` clears a request file before acting on it, so a launcher that
   dies mid-restart loses that request. The next run starts backends fresh, which
   is the outcome the request was asking for anyway.
+- A missing model path is never waited on. Remounting an external volume is a
+  manual human action with unbounded latency, so no timer can be right: every
+  candidate duration is a guess about when someone will notice, spent looking
+  busy while reporting nothing. The absence is recorded, the launch fails at
+  once, the bound abandons it, and the launcher exits non-zero.
 
 ### Restart log
 
@@ -324,18 +329,23 @@ Because the router's error paths never emitted telemetry, backend failures were 
 recorded anywhere durable before this — this log is the first measurement of how
 often a model actually wedges.
 
-### Start at login
+### Start at login — withdrawn
 
-```bash
-./scripts/install-launchagent.sh              # install and start
-./scripts/install-launchagent.sh --uninstall  # remove
-launchctl print gui/$(id -u)/com.slm-server   # status
-```
+There is deliberately no LaunchAgent, plist or installer. Automatic start at
+login was specified, built, and then **withdrawn by the owner** — not left
+unverified. The distinction matters: unverifiable would mean we could not check
+it, withdrawn means it is not wanted. The server is started by hand.
 
-`KeepAlive` is `SuccessfulExit=false` deliberately: launchd relaunches the stack if
-it dies unexpectedly, but a clean exit means the supervisor gave up after hitting
-its restart bound, and relaunching that would recreate the churn the bound exists
-to prevent.
+The watchdog's capability is unaffected by this. Only the boot-time apparatus
+went; detection, restart and the bound are untouched and proven live.
+
+One thing the removal changed rather than deleted. The launcher used to exit 0
+when every backend was abandoned, chosen so a LaunchAgent's `KeepAlive` would
+not relaunch it into churn. With launchd gone that rationale evaporated, and
+the behaviour it left behind was worse than neutral: the consumer of that exit
+code became a human's shell, where exit 0 reports success while no model is
+running. It now exits non-zero. The bound is unchanged — attempts still stop
+and the reason is still recorded — only the reporting of that outcome changed.
 
 ### Tuning
 
@@ -344,7 +354,6 @@ All optional, via environment (`.env` is loaded by `start.sh`):
 `SLM_WATCHDOG_ENABLED` · `SLM_WATCHDOG_FAILURE_THRESHOLD` · `SLM_WATCHDOG_STALL_SECONDS` ·
 `SLM_WATCHDOG_SWEEP_SECONDS` · `SLM_WATCHDOG_MAX_RESTARTS` · `SLM_WATCHDOG_RESTART_WINDOW_SECONDS` ·
 `SLM_WATCHDOG_RESTART_COOLDOWN_SECONDS` · `SLM_WATCHDOG_STARTUP_GRACE_SECONDS` ·
-`SLM_WATCHDOG_MOUNT_WAIT_SECONDS` ·
 `SLM_WATCHDOG_REQUEST_DIR` · `SLM_WATCHDOG_LOG_PATH`
 
 Set `SLM_WATCHDOG_ENABLED=false` to fall back to the previous behaviour, where

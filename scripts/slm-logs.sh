@@ -6,10 +6,13 @@
 #   ./scripts/slm-logs.sh all          # both, interleaved
 #   ./scripts/slm-logs.sh raw          # server output, unformatted
 #
-# Once the LaunchAgent is installed the stack has no terminal, so this is the
-# way to watch it. Structlog emits dense JSON lines; they are flattened to
+# Structlog emits dense JSON lines; they are flattened to
 # `HH:MM:SS LEVEL event key=value ...` here, and non-JSON lines pass through
 # untouched so uvicorn and start.sh banners still read normally.
+#
+# The stack is started by hand (./start.sh), so its stdout goes wherever you
+# started it — a tmux pane, usually. This reads the files instead, which is
+# what you want when that pane is elsewhere or has scrolled past.
 
 set -uo pipefail
 
