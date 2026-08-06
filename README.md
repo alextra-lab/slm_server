@@ -266,6 +266,23 @@ Restarts are bounded at 5 per 10 minutes per backend. Past that the backend is
 abandoned with the reason recorded, so a configuration that cannot start fails
 visibly instead of churning forever.
 
+A restart request is also discarded if it predates the target backend's start plus
+a 180s grace period. That one rule closes three separate ways to restart a healthy
+backend: a request file left behind by a previous run; a trip raised against the
+old process while its replacement is still starting; and — the worst of the three
+— the minutes a 35B spends loading, during which every request is refused and
+would otherwise trip restart after restart until a perfectly good backend hit its
+bound and was abandoned.
+
+Two limitations, accepted rather than hidden:
+
+- Stray reaping selects by listening port, not by ownership. An unrelated
+  application listening on 8502/8503 on another local interface would be killed
+  during a restart. Those ports belong to this project on this machine.
+- `check_requests` clears a request file before acting on it, so a launcher that
+  dies mid-restart loses that request. The next run starts backends fresh, which
+  is the outcome the request was asking for anyway.
+
 ### Restart log
 
 `logs/watchdog.jsonl` — one JSON object per line, appended:
@@ -303,7 +320,8 @@ All optional, via environment (`.env` is loaded by `start.sh`):
 
 `SLM_WATCHDOG_ENABLED` · `SLM_WATCHDOG_FAILURE_THRESHOLD` · `SLM_WATCHDOG_STALL_SECONDS` ·
 `SLM_WATCHDOG_SWEEP_SECONDS` · `SLM_WATCHDOG_MAX_RESTARTS` · `SLM_WATCHDOG_RESTART_WINDOW_SECONDS` ·
-`SLM_WATCHDOG_RESTART_COOLDOWN_SECONDS` · `SLM_WATCHDOG_MOUNT_WAIT_SECONDS` ·
+`SLM_WATCHDOG_RESTART_COOLDOWN_SECONDS` · `SLM_WATCHDOG_STARTUP_GRACE_SECONDS` ·
+`SLM_WATCHDOG_MOUNT_WAIT_SECONDS` ·
 `SLM_WATCHDOG_REQUEST_DIR` · `SLM_WATCHDOG_LOG_PATH`
 
 Set `SLM_WATCHDOG_ENABLED=false` to fall back to the previous behaviour, where

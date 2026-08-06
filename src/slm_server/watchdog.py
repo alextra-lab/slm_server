@@ -46,7 +46,7 @@ import subprocess
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from itertools import count
 from pathlib import Path
 from typing import Literal
@@ -93,6 +93,10 @@ class WatchdogSettings:
             before a backend is abandoned.
         restart_window_seconds: Rolling window over which `max_restarts` applies.
         restart_cooldown_seconds: Pause between consecutive restart attempts.
+        startup_grace_seconds: How long after a backend starts its restart
+            requests are ignored. A large model takes minutes to load and
+            refuses connections throughout; without this, that window trips
+            restart after restart until the backend is abandoned.
         mount_wait_seconds: How long to wait for a model path to appear before
             launching anyway. Covers the external volume not being mounted yet
             after a reboot.
@@ -107,6 +111,7 @@ class WatchdogSettings:
     max_restarts: int = 5
     restart_window_seconds: float = 600.0
     restart_cooldown_seconds: float = 10.0
+    startup_grace_seconds: float = 180.0
     mount_wait_seconds: float = 120.0
     request_dir: Path = _REPO_ROOT / "logs" / "watchdog" / "requests"
     log_path: Path = _REPO_ROOT / "logs" / "watchdog.jsonl"
@@ -134,6 +139,7 @@ def load_settings() -> WatchdogSettings:
         max_restarts=_env_int("SLM_WATCHDOG_MAX_RESTARTS", 5),
         restart_window_seconds=_env_float("SLM_WATCHDOG_RESTART_WINDOW_SECONDS", 600.0),
         restart_cooldown_seconds=_env_float("SLM_WATCHDOG_RESTART_COOLDOWN_SECONDS", 10.0),
+        startup_grace_seconds=_env_float("SLM_WATCHDOG_STARTUP_GRACE_SECONDS", 180.0),
         mount_wait_seconds=_env_float("SLM_WATCHDOG_MOUNT_WAIT_SECONDS", 120.0),
         request_dir=Path(request_dir) if request_dir else defaults.request_dir,
         log_path=Path(log_path) if log_path else defaults.log_path,
@@ -487,6 +493,7 @@ class _Supervised:
     process: subprocess.Popen | None
     attempts: list[float] = field(default_factory=list)
     abandoned: bool = False
+    started_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
 class BackendSupervisor:
@@ -528,6 +535,45 @@ class BackendSupervisor:
             process: The running process.
         """
         self._backends[port] = _Supervised(role=role, model_def=model_def, process=process)
+
+    def _is_stale(self, entry: _Supervised, request: RestartRequest) -> bool:
+        """Whether a restart request predates the backend it asks to restart.
+
+        Three distinct false-restart bugs share this one root cause, and all
+        three restart a backend that is fine:
+
+        1. A request file left behind by a previous launcher run would restart a
+           freshly started backend on the first sweep.
+        2. While a restart is in progress the router is still failing requests
+           against the *old* process, and those trips write a new request that
+           would then restart the healthy replacement.
+        3. A 35B takes minutes to load. Every request during that window gets a
+           connection refused, trips again, and would restart the backend
+           mid-load — repeatedly, until the restart budget is exhausted and a
+           perfectly good backend is abandoned.
+
+        So a request only counts if it was raised after this backend's current
+        process had a fair chance to serve: its start time plus a grace period.
+
+        Args:
+            entry: Supervised backend the request targets.
+            request: The request under consideration.
+
+        Returns:
+            True if the request should be discarded.
+        """
+        try:
+            requested_at = datetime.fromisoformat(request.requested_at)
+        except (TypeError, ValueError):
+            # Our own writer produced it, so a bad timestamp is a bug here, not
+            # hostile input. Servicing it is the safer failure: discarding on
+            # parse errors would silently disable restarts altogether.
+            log.warning("watchdog_request_timestamp_unparseable", value=request.requested_at)
+            return False
+        if requested_at.tzinfo is None:
+            requested_at = requested_at.replace(tzinfo=UTC)
+        usable_from = entry.started_at + timedelta(seconds=self.settings.startup_grace_seconds)
+        return requested_at < usable_from
 
     @property
     def live_count(self) -> int:
@@ -720,6 +766,10 @@ class BackendSupervisor:
         self.wait_for_model_path(entry.model_def)
         process = self._start_fn(entry.model_def)
         entry.process = process
+        if process is not None:
+            # Restarts the grace window: requests raised against the process we
+            # just replaced must not restart its replacement.
+            entry.started_at = datetime.now(UTC)
 
         append_event(
             self.settings.log_path,
@@ -779,8 +829,26 @@ class BackendSupervisor:
         for request in read_restart_requests(self.settings.request_dir):
             clear_restart_request(self.settings.request_dir, request.port)
             serviced.append(request.port)
-            if request.port not in self._backends:
+            entry = self._backends.get(request.port)
+            if entry is None:
                 log.warning("watchdog_request_unknown_port", port=request.port)
+                continue
+            if self._is_stale(entry, request):
+                log.info(
+                    "watchdog_stale_request_discarded",
+                    port=request.port,
+                    reason=request.reason,
+                    requested_at=request.requested_at,
+                    backend_started_at=entry.started_at.isoformat(),
+                )
+                append_event(
+                    self.settings.log_path,
+                    "stale_request_discarded",
+                    port=request.port,
+                    reason=request.reason,
+                    requested_at=request.requested_at,
+                    backend_started_at=entry.started_at.isoformat(),
+                )
                 continue
             log.warning("watchdog_servicing_request", port=request.port, reason=request.reason)
             self.restart(request.port, request.reason, request.detail)

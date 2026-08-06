@@ -161,6 +161,26 @@ def test_requests_that_never_reached_a_backend_are_not_counted(
     assert wd.read_restart_requests(watchdog_settings.request_dir) == []
 
 
+def test_a_stream_that_breaks_after_its_first_byte_is_counted_as_a_failure(
+    client: TestClient, watchdog_settings: wd.WatchdogSettings
+) -> None:
+    """A backend that emits one chunk then dies was previously scored a success.
+
+    The middleware records the 200 that opened the stream before the body is
+    consumed, and the first byte disables stall detection for that request, so
+    nothing else would ever notice.
+    """
+    watchdog = app.state.watchdog
+    handle = router_module._InFlightHandle(watchdog, 8502, watchdog.tracker.begin_request(8502))
+
+    handle.failed("stream aborted after 12 bytes: peer closed")
+    handle.failed("stream aborted after 4 bytes: peer closed")
+
+    pending = wd.read_restart_requests(watchdog_settings.request_dir)
+    assert len(pending) == 1
+    assert pending[0].reason == "server_error"
+
+
 def test_non_streaming_requests_are_not_stall_tracked(client: TestClient) -> None:
     """A buffered generation has no first byte until it finishes — observed
     total_ms reaches 890.9s — so stall tracking there would restart a healthy

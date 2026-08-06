@@ -133,13 +133,25 @@ class _InFlightHandle:
         token: Tracker token for this request.
     """
 
-    def __init__(self, watchdog: RouterWatchdog, token: int) -> None:
+    def __init__(self, watchdog: RouterWatchdog, port: int, token: int) -> None:
         self._watchdog = watchdog
+        self._port = port
         self._token = token
 
     def first_byte(self) -> None:
         """Note that the backend produced content, clearing stall suspicion."""
         self._watchdog.tracker.first_byte(self._token)
+
+    def failed(self, detail: str) -> None:
+        """Record a stream that broke after it had started producing output.
+
+        Once a first byte arrives the request is no longer a stall candidate, and
+        the middleware has already recorded the 200 that opened the stream. A
+        backend that emits one chunk and then dies would otherwise be counted as
+        a success. Client disconnects must never reach here — the caller going
+        away says nothing about the model.
+        """
+        self._watchdog.record_failure(self._port, "server_error", detail)
 
     def done(self) -> None:
         """Deregister the request, however it ended."""
@@ -167,7 +179,7 @@ def _begin_in_flight(request: Request, port: int) -> _InFlightHandle | None:
     watchdog: RouterWatchdog | None = getattr(request.app.state, "watchdog", None)
     if watchdog is None or not watchdog.settings.enabled:
         return None
-    return _InFlightHandle(watchdog, watchdog.tracker.begin_request(port))
+    return _InFlightHandle(watchdog, port, watchdog.tracker.begin_request(port))
 
 
 MIN_BACKEND_TIMEOUT_SECONDS = 1.0
@@ -697,6 +709,8 @@ async def _stream_backend_response(
         except asyncio.CancelledError:
             # The caller went away mid-stream. Before FRE-980 this was the edge
             # severing a silent connection and nothing here ever recorded it.
+            # Deliberately NOT a backend failure: blaming the model for a client
+            # hanging up would restart a healthy backend.
             disconnected = True
             log.warning(
                 "stream_client_disconnected",
@@ -707,6 +721,21 @@ async def _stream_backend_response(
                 bytes_forwarded=len(body),
                 heartbeat_count=heartbeats,
             )
+            raise
+        except httpx.HTTPError as exc:
+            # The backend broke the stream after it had already produced output.
+            log.warning(
+                "stream_backend_aborted",
+                model_id=model_id,
+                backend=model_def.backend,
+                port=model_def.port,
+                trace_id=trace_id,
+                bytes_forwarded=len(body),
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+            if in_flight is not None:
+                in_flight.failed(f"stream aborted after {len(body)} bytes: {exc}")
             raise
         finally:
             if in_flight is not None:
@@ -1240,13 +1269,22 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
         # request_complete, and the streaming fix should not change that.
         if body_forward.get("stream"):
             stream_t0 = time.monotonic()
-            probe = await _open_backend_stream(
-                client=client,
-                url=backend_url,
-                body=body_forward,
-                headers=filtered_headers,
-                timeout=timeout,
-            )
+            # Stall-tracked like /v1/chat/completions: a wedge here looks the
+            # same, and without this the 300s stall signal never fires for this
+            # endpoint.
+            in_flight = _begin_in_flight(request, model_def.port)
+            try:
+                probe = await _open_backend_stream(
+                    client=client,
+                    url=backend_url,
+                    body=body_forward,
+                    headers=filtered_headers,
+                    timeout=timeout,
+                )
+            except BaseException:
+                if in_flight is not None:
+                    in_flight.done()
+                raise
             if probe.status_code not in (404, 422):
                 return await _stream_backend_response(
                     response=probe,
@@ -1256,6 +1294,7 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
                     trace_id=trace_id,
                     span_id=span_id,
                     session_id=session_id,
+                    in_flight=in_flight,
                 )
 
             await probe.aclose()
@@ -1275,13 +1314,18 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
                 and "chat_template_kwargs" not in chat_body
             ):
                 chat_body["chat_template_kwargs"] = model_def.chat_template_kwargs
-            fallback_response = await _open_backend_stream(
-                client=client,
-                url=_get_backend_url(model_def, "/v1/chat/completions"),
-                body=chat_body,
-                headers=filtered_headers,
-                timeout=timeout,
-            )
+            try:
+                fallback_response = await _open_backend_stream(
+                    client=client,
+                    url=_get_backend_url(model_def, "/v1/chat/completions"),
+                    body=chat_body,
+                    headers=filtered_headers,
+                    timeout=timeout,
+                )
+            except BaseException:
+                if in_flight is not None:
+                    in_flight.done()
+                raise
             return await _stream_backend_response(
                 response=fallback_response,
                 t0=stream_t0,
@@ -1290,6 +1334,7 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
                 trace_id=trace_id,
                 span_id=span_id,
                 session_id=session_id,
+                in_flight=in_flight,
             )
 
         def _emit_responses_telemetry(response: httpx.Response, total_ms: float) -> None:

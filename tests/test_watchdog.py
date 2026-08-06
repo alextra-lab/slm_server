@@ -10,7 +10,8 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -334,6 +335,109 @@ def test_restart_of_an_unknown_port_is_ignored(settings: wd.WatchdogSettings) ->
     wd.write_restart_request(settings.request_dir, wd.RestartRequest(9999, "m", "stall", "", "t"))
     assert supervisor.check_requests() == [9999]
     assert made == []
+
+
+# --------------------------------------------------------------------------
+# Stale requests — the three false-restart cases
+# --------------------------------------------------------------------------
+
+
+def _request_at(port: int, when: datetime, reason: str = "stall") -> wd.RestartRequest:
+    return wd.RestartRequest(port, "m", reason, "", when.isoformat())
+
+
+def test_request_from_a_previous_run_does_not_restart_a_fresh_backend(
+    settings: wd.WatchdogSettings,
+) -> None:
+    """A leftover file must not kill a backend that has only just started."""
+    supervisor, made = _supervisor(settings, [])
+    supervisor.register(8502, "reasoning", _StubModelDef(), FakePopen(alive=True))
+
+    stale = _request_at(8502, datetime.now(UTC) - timedelta(hours=3))
+    wd.write_restart_request(settings.request_dir, stale)
+    supervisor.check_requests()
+
+    assert made == [], "a request predating this backend must be discarded"
+    events = [e["event"] for e in _events(settings.log_path)]
+    assert "stale_request_discarded" in events
+
+
+def test_failures_against_the_old_process_do_not_restart_the_replacement(
+    settings: wd.WatchdogSettings,
+) -> None:
+    """The router keeps failing during a restart; those trips target the corpse."""
+    # Grace disabled so this isolates the during-restart race rather than the
+    # load window, which has its own test below.
+    prompt = replace(settings, startup_grace_seconds=0.0)
+    supervisor, made = _supervisor(prompt, [])
+    supervisor.register(8502, "reasoning", _StubModelDef(), FakePopen(alive=False))
+
+    # A genuine trip, raised now, is serviced normally.
+    trip = _request_at(8502, datetime.now(UTC))
+    wd.write_restart_request(prompt.request_dir, trip)
+    supervisor.check_requests()
+    assert len(made) == 1
+
+    # The router was still failing against the old process while that restart
+    # ran, so it raises the same trip again. It carries the original timestamp,
+    # which now predates the replacement, and must not restart it.
+    wd.write_restart_request(prompt.request_dir, trip)
+    supervisor.check_requests()
+    assert len(made) == 1, "the healthy replacement must not be restarted"
+
+
+def test_connection_refused_while_a_large_model_loads_does_not_loop(
+    settings: wd.WatchdogSettings,
+) -> None:
+    """A 35B refuses connections for minutes while loading.
+
+    Every request in that window trips. Without a grace period each trip
+    restarts the backend, burning the restart budget until a healthy model is
+    abandoned — turning a slow start into a permanent outage.
+    """
+    supervisor, made = _supervisor(settings, [])
+    supervisor.register(8502, "reasoning", _StubModelDef(), FakePopen(alive=True))
+    started = supervisor._backends[8502].started_at
+
+    for offset in (1, 5, 30, 120, 179):
+        wd.write_restart_request(
+            settings.request_dir,
+            _request_at(8502, started + timedelta(seconds=offset), "unreachable"),
+        )
+        supervisor.check_requests()
+
+    assert made == [], "restart requests during the load window must be ignored"
+    assert supervisor.live_count == 1, "the backend must not be abandoned"
+
+
+def test_a_trip_after_the_grace_period_still_restarts(
+    settings: wd.WatchdogSettings,
+) -> None:
+    """The grace period must not become a permanent mute."""
+    supervisor, made = _supervisor(settings, [])
+    supervisor.register(8502, "reasoning", _StubModelDef(), FakePopen(alive=True))
+    started = supervisor._backends[8502].started_at
+
+    wd.write_restart_request(
+        settings.request_dir,
+        _request_at(8502, started + timedelta(seconds=settings.startup_grace_seconds + 1)),
+    )
+    supervisor.check_requests()
+
+    assert len(made) == 1
+
+
+def test_an_unparseable_timestamp_is_serviced_rather_than_silently_dropped(
+    settings: wd.WatchdogSettings,
+) -> None:
+    """Discarding on a parse error would disable restarts entirely — worse."""
+    supervisor, made = _supervisor(settings, [])
+    supervisor.register(8502, "reasoning", _StubModelDef(), FakePopen(alive=False))
+
+    wd.write_restart_request(settings.request_dir, wd.RestartRequest(8502, "m", "stall", "", "t"))
+    supervisor.check_requests()
+
+    assert len(made) == 1
 
 
 # --------------------------------------------------------------------------
