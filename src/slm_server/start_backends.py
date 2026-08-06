@@ -1080,13 +1080,21 @@ def main() -> None:
             port=model_def.port,
             backend=model_def.backend,
         )
-        # After a reboot the launcher can start before the external volume
-        # holding the models is mounted; wait rather than fail on it.
-        supervisor.wait_for_model_path(model_def)
+        # No mount wait here, deliberately. Waiting in this serial loop blocked
+        # startup for up to mount_wait_seconds *per* missing model, which
+        # outlasted start.sh's readiness check: start.sh gave up, killed the
+        # launcher mid-wait, and took the whole stack down over one bad path —
+        # orphaning already-started children and never starting the router.
+        # A missing path now fails fast and is retried by the supervisor, which
+        # does the waiting in the background under its own restart bound.
         process = start_model_server(model_def, config)
+        # Registered either way: a backend that failed to start still needs
+        # supervising, or nothing retries it and it stays dead silently. The
+        # supervisor's bound applies equally, so a config that cannot start is
+        # abandoned with a reason rather than retried forever.
+        supervisor.register(model_def.port, role, model_def, process)
         if process:
             processes.append((model_def.id, process))
-            supervisor.register(model_def.port, role, model_def, process)
             log.info(
                 "server_started_successfully",
                 model_id=model_def.id,
@@ -1102,10 +1110,15 @@ def main() -> None:
     log.info("startup_summary", attempted=attempted, started=len(processes), failed=failed)
 
     if not processes:
-        log.error("no_servers_started", attempted=attempted)
-        sys.exit(1)
-
-    log.info("all_servers_started", count=len(processes), total_attempted=attempted)
+        # Deliberately not sys.exit(1) any more. A non-zero exit makes the
+        # LaunchAgent's KeepAlive relaunch us, so a config that cannot start
+        # would churn forever at the launchd layer — the same unbounded retry
+        # the supervisor's bound exists to prevent, merely moved up a level and
+        # throttled. Fall through to supervision instead: it retries under the
+        # bound, abandons with a reason, and exits 0 so launchd leaves it alone.
+        log.error("no_servers_started", attempted=attempted, detail="entering bounded retry")
+    else:
+        log.info("all_servers_started", count=len(processes), total_attempted=attempted)
 
     # Supervise. Replaces a bare process.wait() per child, which noticed a death
     # only to move on to the next wait and never restarted anything.

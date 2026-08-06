@@ -94,9 +94,13 @@ class WatchdogSettings:
         restart_window_seconds: Rolling window over which `max_restarts` applies.
         restart_cooldown_seconds: Pause between consecutive restart attempts.
         startup_grace_seconds: How long after a backend starts its restart
-            requests are ignored. A large model takes minutes to load and
-            refuses connections throughout; without this, that window trips
-            restart after restart until the backend is abandoned.
+            requests are ignored. A model refuses connections while it loads;
+            without this, that window trips restart after restart until a
+            healthy backend is abandoned. Set to 3x the owner-reported 30s cold
+            load of the 35B — a warm start was measured at 1-2s, so the margin
+            is large. Erring generous is cheap here: during the grace period
+            detection is only *delayed*, since the router keeps re-tripping and
+            the first trip past the window is serviced.
         mount_wait_seconds: How long to wait for a model path to appear before
             launching anyway. Covers the external volume not being mounted yet
             after a reboot.
@@ -111,7 +115,7 @@ class WatchdogSettings:
     max_restarts: int = 5
     restart_window_seconds: float = 600.0
     restart_cooldown_seconds: float = 10.0
-    startup_grace_seconds: float = 180.0
+    startup_grace_seconds: float = 90.0
     mount_wait_seconds: float = 120.0
     request_dir: Path = _REPO_ROOT / "logs" / "watchdog" / "requests"
     log_path: Path = _REPO_ROOT / "logs" / "watchdog.jsonl"
@@ -139,7 +143,7 @@ def load_settings() -> WatchdogSettings:
         max_restarts=_env_int("SLM_WATCHDOG_MAX_RESTARTS", 5),
         restart_window_seconds=_env_float("SLM_WATCHDOG_RESTART_WINDOW_SECONDS", 600.0),
         restart_cooldown_seconds=_env_float("SLM_WATCHDOG_RESTART_COOLDOWN_SECONDS", 10.0),
-        startup_grace_seconds=_env_float("SLM_WATCHDOG_STARTUP_GRACE_SECONDS", 180.0),
+        startup_grace_seconds=_env_float("SLM_WATCHDOG_STARTUP_GRACE_SECONDS", 90.0),
         mount_wait_seconds=_env_float("SLM_WATCHDOG_MOUNT_WAIT_SECONDS", 120.0),
         request_dir=Path(request_dir) if request_dir else defaults.request_dir,
         log_path=Path(log_path) if log_path else defaults.log_path,
@@ -525,14 +529,22 @@ class BackendSupervisor:
         self._sleep = sleep_fn
         self._backends: dict[int, _Supervised] = {}
 
-    def register(self, port: int, role: str, model_def: object, process: subprocess.Popen) -> None:
-        """Track an already-started backend.
+    def register(
+        self, port: int, role: str, model_def: object, process: subprocess.Popen | None
+    ) -> None:
+        """Track a backend, whether or not it managed to start.
+
+        `process` may be None: a backend that failed its initial launch still
+        needs supervising, or nothing would ever retry it. That is not
+        hypothetical — the models sit on an external volume, so a launch
+        attempted before it mounts fails for a reason that resolves itself
+        moments later.
 
         Args:
             port: Backend port.
             role: Config role name, for logging.
             model_def: Model definition, passed back to `start_fn` on restart.
-            process: The running process.
+            process: The running process, or None if it failed to start.
         """
         self._backends[port] = _Supervised(role=role, model_def=model_def, process=process)
 
@@ -629,6 +641,12 @@ class BackendSupervisor:
         Models live on an external volume. After a reboot the launcher can start
         before the volume mounts, and a launch attempted then fails for a reason
         that resolves itself seconds later.
+
+        Called only from the restart path, never from initial startup. Waiting
+        in the startup loop blocked it for up to `mount_wait_seconds` per
+        missing model, which outlasted start.sh's readiness check and let one
+        bad path tear down the entire stack. Here the wait happens in the
+        background supervision loop, where the restart bound already applies.
         """
         raw_path = getattr(model_def, "model_path", None)
         if not raw_path:
@@ -789,18 +807,38 @@ class BackendSupervisor:
         return process is not None
 
     def check_exited(self) -> list[int]:
-        """Restart backends whose process has exited.
+        """Restart backends that are not running.
 
-        This is the easy failure mode, and it is handled here as well as by the
-        request channel so that a dead backend recovers even with no traffic at
-        all to notice it.
+        Handled here as well as by the request channel so a dead backend
+        recovers even with no traffic at all to notice it.
+
+        "Not running" deliberately includes a backend with no process at all,
+        which happens two ways: it failed its very first launch (the external
+        volume was not mounted yet), or its last restart failed to spawn. Both
+        were previously skipped outright, so such a backend was never retried
+        and never abandoned either — it fell silent while still counting as
+        live, leaving the supervisor looping over something it had quietly
+        given up on. Retrying under the same bound means it either recovers or
+        is abandoned with a reason on the record.
 
         Returns:
-            Ports that were found exited.
+            Ports found not running.
         """
         exited: list[int] = []
-        for port, entry in self._backends.items():
-            if entry.abandoned or entry.process is None:
+        for port, entry in list(self._backends.items()):
+            if entry.abandoned:
+                continue
+            if entry.process is None:
+                exited.append(port)
+                append_event(
+                    self.settings.log_path,
+                    "backend_not_running",
+                    port=port,
+                    role=entry.role,
+                    model_id=getattr(entry.model_def, "id", None),
+                    detail="no process — initial launch or last restart failed",
+                )
+                self.restart(port, "not_running", "no process to supervise")
                 continue
             code = entry.process.poll()
             if code is None:

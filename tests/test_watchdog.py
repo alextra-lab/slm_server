@@ -289,6 +289,52 @@ def test_restarts_are_bounded_then_the_backend_is_abandoned(
     assert "restarts within" in abandoned[0]["reason"], "the reason must be readable"
 
 
+def test_a_backend_that_never_started_is_retried_then_abandoned(
+    settings: wd.WatchdogSettings,
+) -> None:
+    """AC-3 via the path a broken config actually takes.
+
+    A backend whose very first launch failed has no process at all. It was
+    previously skipped by check_exited, so nothing retried it and nothing
+    abandoned it either — it fell silent while still counting as live. It must
+    instead be retried under the bound and then abandoned with a reason.
+    """
+    attempts: list[object] = []
+    supervisor = wd.BackendSupervisor(
+        settings,
+        start_fn=lambda model_def: attempts.append(model_def) or None,  # never starts
+        sleep_fn=lambda _s: None,
+    )
+    supervisor.register(8599, "broken", _StubModelDef(port=8599), None)
+
+    for _ in range(settings.max_restarts + 2):
+        supervisor.check_exited()
+
+    assert len(attempts) == settings.max_restarts, "retries must stop at the bound"
+    assert supervisor.live_count == 0
+    abandoned = [e for e in _events(settings.log_path) if e["event"] == "backend_abandoned"]
+    assert len(abandoned) == 1
+    assert abandoned[0]["port"] == 8599
+
+
+def test_a_failed_restart_leaves_the_backend_retryable(settings: wd.WatchdogSettings) -> None:
+    """A restart that fails to spawn must not silently end supervision."""
+    outcomes: list[FakePopen | None] = [None, FakePopen(pid=3000)]
+    supervisor = wd.BackendSupervisor(
+        settings,
+        start_fn=lambda _m: outcomes.pop(0),
+        sleep_fn=lambda _s: None,
+    )
+    supervisor.register(8502, "reasoning", _StubModelDef(), FakePopen(alive=False))
+
+    supervisor.check_exited()  # restart attempt 1 fails to spawn
+    assert supervisor._backends[8502].process is None
+
+    supervisor.check_exited()  # must try again rather than fall silent
+    assert supervisor._backends[8502].process is not None
+    assert supervisor._backends[8502].process.pid == 3000
+
+
 def test_an_abandoned_backend_is_not_restarted_again(settings: wd.WatchdogSettings) -> None:
     supervisor, made = _supervisor(settings, [])
     supervisor.register(8502, "reasoning", _StubModelDef(), FakePopen(alive=False))
@@ -399,7 +445,8 @@ def test_connection_refused_while_a_large_model_loads_does_not_loop(
     supervisor.register(8502, "reasoning", _StubModelDef(), FakePopen(alive=True))
     started = supervisor._backends[8502].started_at
 
-    for offset in (1, 5, 30, 120, 179):
+    grace = settings.startup_grace_seconds
+    for offset in (1, 5, grace * 0.5, grace * 0.9, grace - 1):
         wd.write_restart_request(
             settings.request_dir,
             _request_at(8502, started + timedelta(seconds=offset), "unreachable"),
