@@ -16,8 +16,28 @@ from structlog import get_logger
 
 from slm_server.config import ModelConfig, ModelDefinition, load_model_config
 from slm_server.telemetry import ship_request_complete
+from slm_server.watchdog import RouterWatchdog
+from slm_server.watchdog import load_settings as load_watchdog_settings
 
 log = get_logger(__name__)
+
+
+async def _watchdog_sweep_loop(app: FastAPI) -> None:
+    """Periodically look for in-flight requests that have gone silent.
+
+    A wedged backend still completes the TCP handshake, so nothing fails until
+    the read timeout expires — up to 600s per request here. Sweeping for stalls
+    detects the wedge long before that, and is the only signal that fires while
+    the offending request is still hanging.
+    """
+    watchdog: RouterWatchdog = app.state.watchdog
+    interval = watchdog.settings.sweep_interval_seconds
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            watchdog.sweep()
+        except Exception as exc:  # noqa: BLE001 - the sweeper must never die
+            log.warning("watchdog_sweep_failed", error=str(exc))
 
 
 @asynccontextmanager
@@ -37,14 +57,117 @@ async def lifespan(app: FastAPI):
         await app.state.http_client.aclose()
         raise
 
+    # Watchdog: judge backends by their errors on real traffic (FRE-241).
+    watchdog_settings = load_watchdog_settings()
+    app.state.watchdog = RouterWatchdog(
+        watchdog_settings,
+        model_ids={m.port: m.id for m in app.state.model_config.models.values()},
+    )
+    sweep_task = (
+        asyncio.create_task(_watchdog_sweep_loop(app)) if watchdog_settings.enabled else None
+    )
+    log.info(
+        "watchdog_initialised",
+        enabled=watchdog_settings.enabled,
+        failure_threshold=watchdog_settings.failure_threshold,
+        stall_seconds=watchdog_settings.stall_seconds,
+    )
+
     yield
 
-    # Cleanup: close HTTP client
+    # Cleanup: stop the sweeper, then close the HTTP client
+    if sweep_task is not None:
+        sweep_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await sweep_task
     await app.state.http_client.aclose()
     log.info("application_shutdown")
 
 
 app = FastAPI(title="SLM Server Router", version="0.2.0", lifespan=lifespan)
+
+
+# Status codes the router itself produces for a backend that could not serve:
+# 503 from ConnectError (process gone), 504 from TimeoutException (no answer).
+_UNREACHABLE_STATUS = 503
+_TIMEOUT_STATUS = 504
+
+
+@app.middleware("http")
+async def _watchdog_outcome_middleware(request: Request, call_next):
+    """Record whether each proxied request was actually served.
+
+    Judging from the response status rather than from inside every endpoint
+    keeps one rule in one place and covers chat, embeddings, rerank and
+    responses alike. Endpoints opt in by stamping `request.state.backend_port`
+    once they know which backend they resolved to; requests that never got that
+    far (unknown model, malformed body) are not a backend's fault and are
+    ignored here.
+
+    4xx is likewise ignored: a bad request says nothing about the model's
+    health, and counting it would restart a working backend.
+    """
+    response = await call_next(request)
+    port = getattr(request.state, "backend_port", None)
+    watchdog: RouterWatchdog | None = getattr(request.app.state, "watchdog", None)
+    if port is None or watchdog is None:
+        return response
+
+    status = response.status_code
+    if status < 500:
+        watchdog.record_success(port)
+    elif status == _UNREACHABLE_STATUS:
+        watchdog.record_failure(port, "unreachable", "backend refused connection")
+    elif status == _TIMEOUT_STATUS:
+        watchdog.record_failure(port, "timeout", "backend did not answer in time")
+    else:
+        watchdog.record_failure(port, "server_error", f"backend returned {status}")
+    return response
+
+
+class _InFlightHandle:
+    """Lifetime of one streaming backend call, as seen by the stall sweeper.
+
+    Args:
+        watchdog: The router watchdog owning the tracker.
+        token: Tracker token for this request.
+    """
+
+    def __init__(self, watchdog: RouterWatchdog, token: int) -> None:
+        self._watchdog = watchdog
+        self._token = token
+
+    def first_byte(self) -> None:
+        """Note that the backend produced content, clearing stall suspicion."""
+        self._watchdog.tracker.first_byte(self._token)
+
+    def done(self) -> None:
+        """Deregister the request, however it ended."""
+        self._watchdog.tracker.end_request(self._token)
+
+
+def _begin_in_flight(request: Request, port: int) -> _InFlightHandle | None:
+    """Start stall tracking for a streaming backend call.
+
+    Only streaming calls are tracked. A non-streaming request buffers the entire
+    generation before `client.post` returns, so "no first byte yet" is its normal
+    state for the whole turn — observed `total_ms` reaches 890.9s. Applying a
+    stall threshold there would restart healthy backends mid-generation. Those
+    requests are covered by the read timeout and consecutive-failure counting
+    instead. On the streaming path the first byte has never taken more than
+    30.4s, which is what makes a 300s silence conclusive.
+
+    Args:
+        request: Incoming request, for app state.
+        port: Backend port being called.
+
+    Returns:
+        A handle to report first byte and completion, or None if disabled.
+    """
+    watchdog: RouterWatchdog | None = getattr(request.app.state, "watchdog", None)
+    if watchdog is None or not watchdog.settings.enabled:
+        return None
+    return _InFlightHandle(watchdog, watchdog.tracker.begin_request(port))
 
 
 MIN_BACKEND_TIMEOUT_SECONDS = 1.0
@@ -472,6 +595,7 @@ async def _stream_backend_response(
     span_id: str | None = None,
     session_id: str | None = None,
     emit_telemetry: bool = True,
+    in_flight: _InFlightHandle | None = None,
 ) -> JSONResponse | StreamingResponse:
     """Forward an open backend stream to the caller without buffering it.
 
@@ -492,6 +616,8 @@ async def _stream_backend_response(
         emit_telemetry: Whether to emit request_complete. False for endpoints
             that have never emitted it, so this fix does not silently change
             what lands in the telemetry index.
+        in_flight: Stall-tracking handle for the watchdog, closed when the
+            stream ends however it ends.
 
     Returns:
         A StreamingResponse over the backend SSE stream, or a JSONResponse if the
@@ -528,6 +654,8 @@ async def _stream_backend_response(
         asyncio.create_task(ship_request_complete(tel_doc))
 
     if response.status_code >= 400:
+        if in_flight is not None:
+            in_flight.done()
         raw = await response.aread()
         await response.aclose()
         try:
@@ -562,6 +690,8 @@ async def _stream_backend_response(
                 else:
                     if ttfb_ms is None:
                         ttfb_ms = (time.monotonic() - t0) * 1000
+                        if in_flight is not None:
+                            in_flight.first_byte()
                     body.extend(chunk)
                 yield chunk
         except asyncio.CancelledError:
@@ -579,6 +709,8 @@ async def _stream_backend_response(
             )
             raise
         finally:
+            if in_flight is not None:
+                in_flight.done()
             with contextlib.suppress(Exception):
                 await response.aclose()
             usage, timings = _parse_sse_telemetry(bytes(body))
@@ -609,6 +741,7 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
 
         model_def = _get_model_definition(model_id, request.app.state.model_config)
         backend_url = _get_backend_url(model_def, "/v1/chat/completions")
+        request.state.backend_port = model_def.port
 
         trace_id = request.headers.get("x-trace-id")
         span_id = request.headers.get("x-span-id")
@@ -646,13 +779,19 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
         # connection never goes silent for the length of a generation (FRE-980).
         if body_forward.get("stream"):
             stream_t0 = time.monotonic()
-            backend_response = await _open_backend_stream(
-                client=client,
-                url=backend_url,
-                body=body_forward,
-                headers=filtered_headers,
-                timeout=timeout,
-            )
+            in_flight = _begin_in_flight(request, model_def.port)
+            try:
+                backend_response = await _open_backend_stream(
+                    client=client,
+                    url=backend_url,
+                    body=body_forward,
+                    headers=filtered_headers,
+                    timeout=timeout,
+                )
+            except BaseException:
+                if in_flight is not None:
+                    in_flight.done()
+                raise
             return await _stream_backend_response(
                 response=backend_response,
                 t0=stream_t0,
@@ -661,6 +800,7 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
                 trace_id=trace_id,
                 span_id=span_id,
                 session_id=session_id,
+                in_flight=in_flight,
             )
 
         t0 = time.monotonic()
@@ -797,6 +937,7 @@ async def embeddings(request: Request) -> JSONResponse:
 
         model_def = _get_model_definition(model_id, request.app.state.model_config)
         backend_url = _get_backend_url(model_def, "/v1/embeddings")
+        request.state.backend_port = model_def.port
 
         log.info(
             "routing_embeddings_request",
@@ -912,6 +1053,7 @@ async def rerank(request: Request) -> JSONResponse:
 
         model_def = _get_model_definition(model_id, request.app.state.model_config)
         backend_url = _get_backend_url(model_def, "/v1/rerank")
+        request.state.backend_port = model_def.port
 
         trace_id = request.headers.get("x-trace-id")
         span_id = request.headers.get("x-span-id")
@@ -1064,6 +1206,7 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
 
         model_def = _get_model_definition(model_id, request.app.state.model_config)
         backend_url = _get_backend_url(model_def, "/v1/responses")
+        request.state.backend_port = model_def.port
 
         trace_id = request.headers.get("x-trace-id")
         span_id = request.headers.get("x-span-id")

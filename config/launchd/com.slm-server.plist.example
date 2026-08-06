@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  LaunchAgent for SLM Server (FRE-241 AC-4: survives a reboot).
+
+  Install with scripts/install-launchagent.sh, which substitutes the paths
+  below. Do not copy this file by hand unless you replace every placeholder.
+
+  KeepAlive is SuccessfulExit=false on purpose: launchd relaunches the stack
+  when it dies unexpectedly, but a *zero* exit means the supervisor deliberately
+  gave up after hitting its restart bound against a configuration that cannot
+  start. Relaunching that would recreate exactly the unbounded churn the
+  watchdog exists to prevent, so a clean exit is left alone. The reason it
+  stopped is in logs/watchdog.jsonl.
+
+  ThrottleInterval bounds relaunch rate even in the unexpected-death case.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.slm-server</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>__SLM_SERVER_DIR__/start.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__SLM_SERVER_DIR__</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <key>ThrottleInterval</key>
+    <integer>60</integer>
+
+    <key>StandardOutPath</key>
+    <string>__SLM_SERVER_DIR__/logs/launchd.out</string>
+
+    <key>StandardErrorPath</key>
+    <string>__SLM_SERVER_DIR__/logs/launchd.err</string>
+
+    <!-- uv and llama-server live in Homebrew; launchd's default PATH omits it. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+</dict>
+</plist>

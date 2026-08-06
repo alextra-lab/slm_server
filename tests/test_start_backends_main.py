@@ -1,8 +1,10 @@
 """Tests for backend launcher process lifecycle behavior."""
 
 import signal
+from pathlib import Path
 
 from slm_server import start_backends
+from slm_server import watchdog as wd
 from slm_server.config import ModelConfig, ModelDefinition
 
 
@@ -39,7 +41,7 @@ def _model() -> ModelDefinition:
     )
 
 
-def test_main_cleans_up_started_servers_on_sigterm(monkeypatch) -> None:
+def test_main_cleans_up_started_servers_on_sigterm(monkeypatch, tmp_path: Path) -> None:
     handlers = {}
     process = FakeProcess()
     cfg = ModelConfig(models={"reasoning": _model()})
@@ -47,14 +49,29 @@ def test_main_cleans_up_started_servers_on_sigterm(monkeypatch) -> None:
     monkeypatch.setattr(start_backends, "load_model_config", lambda: cfg)
     monkeypatch.setattr(start_backends, "start_model_server", lambda _model_def, _cfg: process)
     monkeypatch.setattr(signal, "signal", lambda sig, handler: handlers.setdefault(sig, handler))
+    # This test is about shutdown, not timing: keep the supervisor from waiting
+    # on the (absent) model path or sleeping between sweeps, and keep its log
+    # out of the repo.
+    monkeypatch.setattr(
+        start_backends,
+        "load_watchdog_settings",
+        lambda: wd.WatchdogSettings(
+            sweep_interval_seconds=0.0,
+            restart_cooldown_seconds=0.0,
+            mount_wait_seconds=0.0,
+            request_dir=tmp_path / "requests",
+            log_path=tmp_path / "watchdog.jsonl",
+        ),
+    )
 
-    def wait_until_signal(timeout: float | None = None) -> None:
-        if timeout is None:
-            handlers[signal.SIGTERM](signal.SIGTERM, None)
-            return
-        process.returncode = 0
+    # The supervisor polls for liveness instead of blocking in wait(), so the
+    # signal arrives during a poll. What the test checks is unchanged: SIGTERM
+    # must terminate the children it started, without escalating to SIGKILL.
+    def poll_then_signal() -> int | None:
+        handlers[signal.SIGTERM](signal.SIGTERM, None)
+        return None
 
-    process.wait = wait_until_signal
+    process.poll = poll_then_signal
 
     start_backends.main()
 

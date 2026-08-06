@@ -235,6 +235,80 @@ Router health check.
 - When native `llama-server` is not found, falls back to `python -m llama_cpp.server`
 - Requires local `.gguf` files — Hugging Face model IDs are not supported
 
+## Watchdog
+
+Backends that stop serving are restarted automatically (FRE-241). The hard case is
+not a dead process but a **stuck** one — alive, still holding its port, unable to
+produce a token. Neither health path can see that state: `/health` reports on the
+router itself, and `/v1/backends/health` only proves a socket answered. So the
+watchdog judges backends by the router's own errors on real traffic instead.
+
+A restart is triggered by:
+
+| Signal | Trips after |
+|---|---|
+| Backend unreachable (connection refused) | 2 consecutive |
+| Backend timeout | 2 consecutive |
+| Backend 5xx | 2 consecutive |
+| No first byte on a streaming request for 300s | 1 — see below |
+| Backend process exited | immediately |
+
+Client 4xx never counts: a malformed request says nothing about model health.
+
+The 300s stall threshold is calibrated, not guessed. Across 798 recorded requests,
+router-observed time to first byte peaked at 30.4s and backend-reported prefill at
+243.2s, so 300s of silence falls outside the observed distribution entirely — which
+is what makes a single occurrence conclusive. Stall tracking applies only to
+streaming requests; a non-streaming call buffers the whole generation and has no
+first byte until it finishes (observed `total_ms` reaches 890.9s).
+
+Restarts are bounded at 5 per 10 minutes per backend. Past that the backend is
+abandoned with the reason recorded, so a configuration that cannot start fails
+visibly instead of churning forever.
+
+### Restart log
+
+`logs/watchdog.jsonl` — one JSON object per line, appended:
+
+```json
+{"ts":"2026-08-06T09:14:02.117Z","event":"restart_succeeded","port":8502,
+ "role":"reasoning","model_id":"unsloth/qwen3.6-35-A3B","reason":"stall",
+ "old_pid":35559,"new_pid":41220,"attempt":1}
+```
+
+Events: `backend_failure`, `restart_requested`, `backend_exited`, `restart_started`,
+`restart_succeeded`, `restart_failed`, `port_stray_killed`, `backend_abandoned`,
+`waiting_for_model_path`, `supervisor_started`, `supervisor_stopped`.
+
+Because the router's error paths never emitted telemetry, backend failures were not
+recorded anywhere durable before this — this log is the first measurement of how
+often a model actually wedges.
+
+### Start at login
+
+```bash
+./scripts/install-launchagent.sh              # install and start
+./scripts/install-launchagent.sh --uninstall  # remove
+launchctl print gui/$(id -u)/com.slm-server   # status
+```
+
+`KeepAlive` is `SuccessfulExit=false` deliberately: launchd relaunches the stack if
+it dies unexpectedly, but a clean exit means the supervisor gave up after hitting
+its restart bound, and relaunching that would recreate the churn the bound exists
+to prevent.
+
+### Tuning
+
+All optional, via environment (`.env` is loaded by `start.sh`):
+
+`SLM_WATCHDOG_ENABLED` · `SLM_WATCHDOG_FAILURE_THRESHOLD` · `SLM_WATCHDOG_STALL_SECONDS` ·
+`SLM_WATCHDOG_SWEEP_SECONDS` · `SLM_WATCHDOG_MAX_RESTARTS` · `SLM_WATCHDOG_RESTART_WINDOW_SECONDS` ·
+`SLM_WATCHDOG_RESTART_COOLDOWN_SECONDS` · `SLM_WATCHDOG_MOUNT_WAIT_SECONDS` ·
+`SLM_WATCHDOG_REQUEST_DIR` · `SLM_WATCHDOG_LOG_PATH`
+
+Set `SLM_WATCHDOG_ENABLED=false` to fall back to the previous behaviour, where
+backends are started and never supervised.
+
 ## Troubleshooting
 
 ### Check backend health

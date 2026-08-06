@@ -16,6 +16,8 @@ import structlog
 from structlog import get_logger
 
 from slm_server.config import ModelConfig, load_model_config
+from slm_server.watchdog import BackendSupervisor
+from slm_server.watchdog import load_settings as load_watchdog_settings
 
 log = get_logger(__name__)
 
@@ -1051,6 +1053,14 @@ def main() -> None:
         log.error("failed_to_load_config", error=str(e))
         sys.exit(1)
 
+    # Watchdog: nothing here used to restart a backend under any circumstance
+    # — this loop ended in process.wait() and a dead model stayed dead (FRE-241).
+    watchdog_settings = load_watchdog_settings()
+    supervisor = BackendSupervisor(
+        watchdog_settings,
+        start_fn=lambda model_def: start_model_server(model_def, config),
+    )
+
     # Start all model servers
     attempted = 0
     failed = 0
@@ -1070,9 +1080,13 @@ def main() -> None:
             port=model_def.port,
             backend=model_def.backend,
         )
+        # After a reboot the launcher can start before the external volume
+        # holding the models is mounted; wait rather than fail on it.
+        supervisor.wait_for_model_path(model_def)
         process = start_model_server(model_def, config)
         if process:
             processes.append((model_def.id, process))
+            supervisor.register(model_def.port, role, model_def, process)
             log.info(
                 "server_started_successfully",
                 model_id=model_def.id,
@@ -1093,13 +1107,25 @@ def main() -> None:
 
     log.info("all_servers_started", count=len(processes), total_attempted=attempted)
 
-    # Wait for all processes
+    # Supervise. Replaces a bare process.wait() per child, which noticed a death
+    # only to move on to the next wait and never restarted anything.
     try:
-        for model_id, process in processes:
-            process.wait()
+        if watchdog_settings.enabled:
+            supervisor.run()
+            # Exit 0 deliberately. Every backend hit its restart bound, so this
+            # is a considered stop, not a crash — and the LaunchAgent's
+            # KeepAlive is SuccessfulExit=false, so a zero exit is what stops
+            # launchd relaunching us into the churn AC-3 forbids.
+            log.error("all_backends_abandoned", detail="see logs/watchdog.jsonl for the reason")
+            sys.exit(0)
+        else:
+            log.info("watchdog_disabled_waiting_only")
+            for model_id, process in processes:
+                process.wait()
     except KeyboardInterrupt:
         log.info("shutting_down_servers")
-        _terminate_processes(processes)
+        # Reap what is running now: a restarted backend has a different pid.
+        _terminate_processes(supervisor.current_processes() or processes)
         log.info("all_servers_stopped")
 
 
