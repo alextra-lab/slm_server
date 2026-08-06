@@ -19,7 +19,27 @@ if [ -f "$SCRIPT_DIR/.env" ]; then
     set +a
 fi
 
-echo "🚀 Starting SLM Server..."
+# Persist this run's output as well as showing it (FRE-241).
+#
+# Nothing used to write it down. The router's stdout is the only place backend
+# errors appear at all — Elasticsearch holds 815 documents across the month to
+# 2026-08-06, of which 814 are status 200 — so the sole copy of any error was
+# the scrollback of whichever terminal happened to start the server, and it died
+# on the next restart. The 429 mis-classification fixed on this branch was found
+# because someone was watching that buffer at the time; nothing would have
+# surfaced it otherwise.
+#
+# tee rather than a plain redirect, so the terminal still shows the stream live
+# — the server is normally started in tmux and watched there.
+mkdir -p "$SCRIPT_DIR/logs"
+START_LOG="$SCRIPT_DIR/logs/start.out"
+# Rotate past 10MB so the record cannot grow without bound on a laptop.
+if [ -f "$START_LOG" ] && [ "$(wc -c < "$START_LOG")" -gt 10485760 ]; then
+    mv "$START_LOG" "$START_LOG.1"
+fi
+exec > >(tee -a "$START_LOG") 2>&1
+
+echo "🚀 Starting SLM Server... ($(date -u +%Y-%m-%dT%H:%M:%SZ))"
 
 # Check if uv is available
 if ! command -v uv &> /dev/null; then

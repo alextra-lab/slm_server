@@ -16,6 +16,8 @@ import structlog
 from structlog import get_logger
 
 from slm_server.config import ModelConfig, load_model_config
+from slm_server.watchdog import BackendSupervisor
+from slm_server.watchdog import load_settings as load_watchdog_settings
 
 log = get_logger(__name__)
 
@@ -1051,6 +1053,14 @@ def main() -> None:
         log.error("failed_to_load_config", error=str(e))
         sys.exit(1)
 
+    # Watchdog: nothing here used to restart a backend under any circumstance
+    # — this loop ended in process.wait() and a dead model stayed dead (FRE-241).
+    watchdog_settings = load_watchdog_settings()
+    supervisor = BackendSupervisor(
+        watchdog_settings,
+        start_fn=lambda model_def: start_model_server(model_def, config),
+    )
+
     # Start all model servers
     attempted = 0
     failed = 0
@@ -1070,7 +1080,18 @@ def main() -> None:
             port=model_def.port,
             backend=model_def.backend,
         )
+        # Nothing blocks here. An earlier version waited in this serial loop
+        # for a missing model path, which outlasted start.sh's readiness check:
+        # start.sh gave up, killed the launcher mid-wait, and took the whole
+        # stack down over one bad path — orphaning already-started children and
+        # never starting the router. A missing path now fails immediately and
+        # the supervisor retries it under the restart bound.
         process = start_model_server(model_def, config)
+        # Registered either way: a backend that failed to start still needs
+        # supervising, or nothing retries it and it stays dead silently. The
+        # supervisor's bound applies equally, so a config that cannot start is
+        # abandoned with a reason rather than retried forever.
+        supervisor.register(model_def.port, role, model_def, process)
         if process:
             processes.append((model_def.id, process))
             log.info(
@@ -1088,18 +1109,47 @@ def main() -> None:
     log.info("startup_summary", attempted=attempted, started=len(processes), failed=failed)
 
     if not processes:
-        log.error("no_servers_started", attempted=attempted)
-        sys.exit(1)
+        # Not an immediate exit: fall through to supervision so a transient
+        # cause (a path that appears a moment later) gets the bounded retry
+        # rather than one attempt. The exit code is decided below, once
+        # supervision has actually finished.
+        log.error("no_servers_started", attempted=attempted, detail="entering bounded retry")
+    else:
+        log.info("all_servers_started", count=len(processes), total_attempted=attempted)
 
-    log.info("all_servers_started", count=len(processes), total_attempted=attempted)
-
-    # Wait for all processes
+    # Supervise. Replaces a bare process.wait() per child, which noticed a death
+    # only to move on to the next wait and never restarted anything.
     try:
-        for model_id, process in processes:
-            process.wait()
+        if watchdog_settings.enabled:
+            supervisor.run()
+            # Non-zero. `run()` returns only when every backend has exhausted
+            # its restart bound and been abandoned, so reaching here means the
+            # launcher is exiting with nothing serving — a failure by any
+            # reading.
+            #
+            # This previously exited 0, for a launchd-specific reason: a
+            # non-zero exit would make KeepAlive relaunch and churn against a
+            # config that cannot start. That apparatus is gone, and with it the
+            # rationale. What the rationale left behind is worse than neutral:
+            # the consumer of this exit code is now a human's shell, and exit 0
+            # tells them the server started when no model is running. That is
+            # the same defect this ticket exists to remove — a mechanism
+            # reporting success with nothing behind it — only aimed at a person
+            # about to assume the server is up.
+            #
+            # The bound itself is unaffected: attempts still stop, and the
+            # reason is still on record. Only how that outcome is reported
+            # changes.
+            log.error("all_backends_abandoned", detail="see logs/watchdog.jsonl for the reason")
+            sys.exit(1)
+        else:
+            log.info("watchdog_disabled_waiting_only")
+            for model_id, process in processes:
+                process.wait()
     except KeyboardInterrupt:
         log.info("shutting_down_servers")
-        _terminate_processes(processes)
+        # Reap what is running now: a restarted backend has a different pid.
+        _terminate_processes(supervisor.current_processes() or processes)
         log.info("all_servers_stopped")
 
 

@@ -235,6 +235,161 @@ Router health check.
 - When native `llama-server` is not found, falls back to `python -m llama_cpp.server`
 - Requires local `.gguf` files — Hugging Face model IDs are not supported
 
+## Watchdog
+
+Backends that stop serving are restarted automatically (FRE-241). The hard case is
+not a dead process but a **stuck** one — alive, still holding its port, unable to
+produce a token. Neither health path can see that state: `/health` reports on the
+router itself, and `/v1/backends/health` only proves a socket answered. So the
+watchdog judges backends by the router's own errors on real traffic instead.
+
+A restart is triggered by:
+
+| Signal | Trips after |
+|---|---|
+| Backend unreachable (503, connection refused) | 2 consecutive |
+| Backend timeout (504, 408) | 2 consecutive |
+| Backend 5xx | 2 consecutive |
+| Backend saturated (429) or too-early (425) | 2 consecutive |
+| No first byte on a streaming request for 300s | 1 — see below |
+| Backend process exited | immediately |
+
+Statuses are classified explicitly rather than by a `status < 500` threshold,
+because some 4xx describe the *backend's condition* and some describe the
+*caller's request*:
+
+| Verdict | Statuses | Effect |
+|---|---|---|
+| health | 2xx, 400, 404, 422 | resets the failure streak |
+| failure | 408, 425, 429, all 5xx | counts toward a restart |
+| ignore | everything else | neither — an unknown code is not evidence of health |
+
+A threshold got this wrong in a way that mattered. Scoring 429 or 408 as health
+did not merely fail to count them: recording health **resets** the consecutive
+failure streak, so a backend degrading into 429s could answer them indefinitely
+and never trip, while also erasing the record of genuine failures on either side
+of it. The third bucket exists for the same reason — an unrecognised status must
+not reset a streak either.
+
+That hole was invisible to the telemetry, and could only ever have been
+invisible: the router's error paths emitted nothing, so all 798 recorded
+requests are status 200 and no 4xx or 5xx had ever been observed at all. The
+watchdog's own detection is the first thing that makes those paths visible, so
+its classification could not be validated against history — only reasoned about
+and then tested. The emit gap was live until this change landed.
+
+The 300s stall threshold is calibrated, not guessed. Across 798 recorded requests,
+router-observed time to first byte peaked at 30.4s and backend-reported prefill at
+243.2s, so 300s of silence falls outside the observed distribution entirely — which
+is what makes a single occurrence conclusive. Stall tracking applies only to
+streaming requests; a non-streaming call buffers the whole generation and has no
+first byte until it finishes (observed `total_ms` reaches 890.9s).
+
+Restarts are bounded at 5 per 10 minutes per backend. Past that the backend is
+abandoned with the reason recorded, so a configuration that cannot start fails
+visibly instead of churning forever.
+
+A restart request is also discarded if it predates the target backend's start plus
+a 180s grace period. That one rule closes three separate ways to restart a healthy
+backend: a request file left behind by a previous run; a trip raised against the
+old process while its replacement is still starting; and — the worst of the three
+— the minutes a 35B spends loading, during which every request is refused and
+would otherwise trip restart after restart until a perfectly good backend hit its
+bound and was abandoned.
+
+Two limitations, accepted rather than hidden:
+
+- Stray reaping selects by listening port, not by ownership. An unrelated
+  application listening on 8502/8503 on another local interface would be killed
+  during a restart. Those ports belong to this project on this machine.
+- `check_requests` clears a request file before acting on it, so a launcher that
+  dies mid-restart loses that request. The next run starts backends fresh, which
+  is the outcome the request was asking for anyway.
+- A missing model path is never waited on. Remounting an external volume is a
+  manual human action with unbounded latency, so no timer can be right: every
+  candidate duration is a guess about when someone will notice, spent looking
+  busy while reporting nothing. The absence is recorded, the launch fails at
+  once, the bound abandons it, and the launcher exits non-zero.
+
+### Restart log
+
+`logs/watchdog.jsonl` — one JSON object per line, appended:
+
+```json
+{"ts":"2026-08-06T09:14:02.117Z","event":"restart_succeeded","port":8502,
+ "role":"reasoning","model_id":"unsloth/qwen3.6-35-A3B","reason":"stall",
+ "old_pid":35559,"new_pid":41220,"attempt":1}
+```
+
+Events: `backend_failure`, `unclassified_status`, `restart_requested`, `stale_request_discarded`,
+`backend_exited`, `backend_not_running`, `restart_started`, `restart_succeeded`,
+`restart_failed`, `port_stray_killed`, `stray_kill_refused`, `model_path_missing`,
+`backend_abandoned`, `supervisor_started`, `supervisor_stopped`.
+
+`supervisor_started` carries every tunable actually in effect, so the running
+configuration is answerable from the log alone rather than inferred from when
+the process happened to start.
+
+Of the three classification verdicts, `failure` and `ignore` are logged and
+`health` is not — health is every successful request and would swamp the file.
+That asymmetry is deliberate and it fixes a directional blind spot: previously
+only failures were recorded, so a status wrongly classified as health produced
+silence, and silence is indistinguishable from nothing having gone wrong. The
+log could reveal a restart that should not have happened but never a failure
+that should have been counted and was not. `unclassified_status` gives the next
+surprising status somewhere to appear.
+
+### Server output
+
+`./start.sh` tees its whole run to `logs/start.out` (rotated past 10MB), while
+still printing live to the terminal. Before this, the router's stdout was the
+only place backend errors appeared at all and it was persisted nowhere — the
+sole copy was the scrollback of whichever terminal started the server, lost on
+the next restart. Elasticsearch cannot substitute: it holds 815 documents for
+the month to 2026-08-06, of which 814 are status 200, because the error paths
+emitted nothing.
+
+```bash
+./scripts/slm-logs.sh              # server output, prettified
+./scripts/slm-logs.sh watchdog     # restart decisions only
+./scripts/slm-logs.sh all          # both, interleaved
+./scripts/slm-logs.sh raw          # unformatted
+```
+
+Because the router's error paths never emitted telemetry, backend failures were not
+recorded anywhere durable before this — this log is the first measurement of how
+often a model actually wedges.
+
+### Start at login — withdrawn
+
+There is deliberately no LaunchAgent, plist or installer. Automatic start at
+login was specified, built, and then **withdrawn by the owner** — not left
+unverified. The distinction matters: unverifiable would mean we could not check
+it, withdrawn means it is not wanted. The server is started by hand.
+
+The watchdog's capability is unaffected by this. Only the boot-time apparatus
+went; detection, restart and the bound are untouched and proven live.
+
+One thing the removal changed rather than deleted. The launcher used to exit 0
+when every backend was abandoned, chosen so a LaunchAgent's `KeepAlive` would
+not relaunch it into churn. With launchd gone that rationale evaporated, and
+the behaviour it left behind was worse than neutral: the consumer of that exit
+code became a human's shell, where exit 0 reports success while no model is
+running. It now exits non-zero. The bound is unchanged — attempts still stop
+and the reason is still recorded — only the reporting of that outcome changed.
+
+### Tuning
+
+All optional, via environment (`.env` is loaded by `start.sh`):
+
+`SLM_WATCHDOG_ENABLED` · `SLM_WATCHDOG_FAILURE_THRESHOLD` · `SLM_WATCHDOG_STALL_SECONDS` ·
+`SLM_WATCHDOG_SWEEP_SECONDS` · `SLM_WATCHDOG_MAX_RESTARTS` · `SLM_WATCHDOG_RESTART_WINDOW_SECONDS` ·
+`SLM_WATCHDOG_RESTART_COOLDOWN_SECONDS` · `SLM_WATCHDOG_STARTUP_GRACE_SECONDS` ·
+`SLM_WATCHDOG_REQUEST_DIR` · `SLM_WATCHDOG_LOG_PATH`
+
+Set `SLM_WATCHDOG_ENABLED=false` to fall back to the previous behaviour, where
+backends are started and never supervised.
+
 ## Troubleshooting
 
 ### Check backend health
