@@ -320,3 +320,57 @@ def test_error_status_marks_the_span_as_error(exported: InMemorySpanExporter) ->
 
     span = _only_span(exported)
     assert span.status.is_ok is False
+
+
+# ── Startup wiring ────────────────────────────────────────────────────────────────────────────────
+
+
+def test_init_tracing_installs_a_real_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The startup path is exercised, not only substituted.
+
+    Every other test here injects its own provider and conftest disables export,
+    so nothing else would notice init_tracing() failing: its own except clause
+    swallows the error and leaves _provider None: production exports nothing while
+    the suite stays green. This is the one test that runs the real wiring.
+    """
+    monkeypatch.setenv("SLM_OTEL_ENABLED", "true")
+    monkeypatch.setenv("SLM_OTLP_ENDPOINT", "http://127.0.0.1:4318")
+    monkeypatch.setattr(telemetry_module, "_provider", None)
+
+    try:
+        telemetry_module.init_tracing()
+
+        provider = telemetry_module._provider
+        assert isinstance(provider, TracerProvider)
+        assert provider.resource.attributes["service.name"] == "slm-server"
+        assert effective_config()["tracer_provider_initialised"] is True
+        # A provider with no processor attached silently drops every span, which
+        # is indistinguishable from working until you look in the trace store.
+        assert provider._active_span_processor._span_processors  # noqa: SLF001
+    finally:
+        telemetry_module.shutdown_tracing()
+
+    assert telemetry_module._provider is None
+    assert effective_config()["tracer_provider_initialised"] is False
+
+
+def test_init_tracing_is_a_noop_when_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """SLM_OTEL_ENABLED=false must leave no provider and start no exporter thread."""
+    monkeypatch.setenv("SLM_OTEL_ENABLED", "false")
+    monkeypatch.setattr(telemetry_module, "_provider", None)
+
+    telemetry_module.init_tracing()
+
+    assert telemetry_module._provider is None
+
+
+def test_effective_config_hides_endpoint_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A credential embedded in the endpoint is not republished to the verifier."""
+    monkeypatch.setenv("SLM_OTLP_ENDPOINT", "https://user:hunter2@collector.internal:4318")
+    monkeypatch.setattr(telemetry_module, "_settings", load_settings())
+
+    config = effective_config()
+
+    assert config["otlp_endpoint"] == "https://collector.internal:4318"
+    assert config["otlp_traces_endpoint"] == "https://collector.internal:4318/v1/traces"
+    assert "hunter2" not in repr(config)

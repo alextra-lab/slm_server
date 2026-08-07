@@ -10,6 +10,9 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 from httpx import ASGITransport, AsyncClient
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from starlette.testclient import TestClient
 
 import slm_server.telemetry as telemetry_module  # type: ignore[import-untyped]
@@ -17,6 +20,11 @@ from slm_server import router as router_module  # type: ignore[import-untyped]
 from slm_server.config import ModelConfig, ModelDefinition  # type: ignore[import-untyped]
 
 app = router_module.app
+
+# A known W3C traceparent, for the router-level continuation tests at the foot of
+# this file. Same value as test_telemetry.py's, so a failure in one localises.
+_TRACE_ID_HEX = "4bf92f3577b34da6a3ce929d0e0e4736"
+_PARENT_SPAN_HEX = "00f067aa0ba902b7"
 
 
 def _capture_emitted(monkeypatch: pytest.MonkeyPatch) -> tuple[list[dict], list[str]]:
@@ -831,3 +839,117 @@ async def test_streaming_backend_error_returns_json_not_stream(
         )
 
     assert response.status_code == 503
+
+
+# ── FRE-1071: span export through the real router (AC-1, AC-2, AC-5) ──────────────────────────────
+# These drive the genuine emit_request_span rather than a capture double, so they
+# exercise context extraction and attribute construction end to end. The unit
+# tests in test_telemetry.py cover the same properties at the function boundary;
+# what these add is proof the router actually reaches it, with real headers.
+
+
+async def test_router_continues_an_inbound_traceparent(
+    monkeypatch: pytest.MonkeyPatch, _telemetry_app_setup: ModelConfig
+) -> None:
+    """AC-1, through the endpoint: the exported span joins the caller's trace.
+
+    Proving this only at the telemetry function would leave the router free to
+    pass the wrong headers — or none — and still pass.
+    """
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    monkeypatch.setattr(telemetry_module, "_provider", provider)
+
+    fake_http = MagicMock()
+    fake_http.post = AsyncMock(
+        return_value=httpx.Response(
+            200,
+            content=_sse_body_with_timings(),
+            headers={"content-type": "text/event-stream"},
+        )
+    )
+    app.state.http_client = fake_http
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app, raise_app_exceptions=True), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "mlx-community/Qwen3.5-9B-8bit",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+            headers={"traceparent": f"00-{_TRACE_ID_HEX}-{_PARENT_SPAN_HEX}-01"},
+        )
+
+    assert response.status_code == 200
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    span = spans[0]
+    assert format(span.context.trace_id, "032x") == _TRACE_ID_HEX
+    assert span.parent is not None
+    assert format(span.parent.span_id, "016x") == _PARENT_SPAN_HEX
+    assert span.parent.is_remote is True
+    assert span.attributes is not None
+    assert span.attributes["slm.emit_path"] == "chat"
+    assert span.attributes["gen_ai.usage.input_tokens"] == 100
+    assert span.attributes["gen_ai.usage.output_tokens"] == 10
+
+
+async def test_responses_fallback_stream_emits_under_the_streaming_path(
+    monkeypatch: pytest.MonkeyPatch, _telemetry_app_setup: ModelConfig
+) -> None:
+    """AC-2's third streaming caller: /v1/responses probing 404 then falling back.
+
+    This branch has its own _stream_backend_response call, so it has its own
+    chance to forget the carrier. Routing through it is already covered; what is
+    asserted here is that it emits, and that the caller's trace still reaches it.
+    """
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    monkeypatch.setattr(telemetry_module, "_provider", provider)
+
+    probe = httpx.Response(
+        404, headers={"content-type": "application/json"}, stream=_LazyByteStream([b"{}"])
+    )
+    fake_http = _sequenced_streaming_client([probe, _streaming_response(_sse_stream_chunks())])
+    app.state.http_client = fake_http
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app, raise_app_exceptions=True), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/v1/responses",
+            json={
+                "model": "mlx-community/Qwen3.5-9B-8bit",
+                "input": "hi",
+                "stream": True,
+            },
+            headers={"traceparent": f"00-{_TRACE_ID_HEX}-{_PARENT_SPAN_HEX}-01"},
+        )
+
+    assert response.status_code == 200
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    span = spans[0]
+    assert span.attributes is not None
+    assert span.attributes["slm.emit_path"] == "streaming"
+    assert format(span.context.trace_id, "032x") == _TRACE_ID_HEX
+
+
+async def test_effective_config_route_serves_the_artifact(router_client: TestClient) -> None:
+    """AC-5: the artifact is reachable over HTTP, not merely computable.
+
+    The function-level test cannot catch a missing or misrouted endpoint, which is
+    the failure the verifier would actually hit.
+    """
+    response = router_client.get("/v1/telemetry/effective-config")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["otlp_endpoint"] == telemetry_module.effective_config()["otlp_endpoint"]
+    assert body["otlp_traces_endpoint"].endswith("/v1/traces")
+    assert body["elasticsearch_export"] is False
+    assert body["emit_paths"] == ["chat", "responses", "rerank", "streaming"]

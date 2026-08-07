@@ -26,6 +26,9 @@ from slm_server.watchdog import load_settings as load_watchdog_settings
 
 log = get_logger(__name__)
 
+#: Ceiling on the span flush at shutdown, so a dead Collector cannot stall a stop.
+_TRACING_SHUTDOWN_TIMEOUT_SECONDS = 5.0
+
 
 async def _watchdog_sweep_loop(app: FastAPI) -> None:
     """Periodically look for in-flight requests that have gone silent.
@@ -84,7 +87,14 @@ async def lifespan(app: FastAPI):
         sweep_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await sweep_task
-    shutdown_tracing()
+    # Bounded, and off the event loop. provider.shutdown() flushes pending spans
+    # synchronously; against a Collector that is down or stalling that flush would
+    # otherwise hold the loop for the exporter's whole timeout window, with the
+    # rest of cleanup queued behind it and the process looking wedged on stop.
+    with contextlib.suppress(TimeoutError):
+        await asyncio.wait_for(
+            asyncio.to_thread(shutdown_tracing), timeout=_TRACING_SHUTDOWN_TIMEOUT_SECONDS
+        )
     await app.state.http_client.aclose()
     log.info("application_shutdown")
 

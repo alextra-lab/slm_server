@@ -28,6 +28,7 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Final, Literal
+from urllib.parse import urlsplit, urlunsplit
 
 import structlog
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
@@ -50,6 +51,10 @@ EMIT_PATHS: Final[tuple[EmitPath, ...]] = ("chat", "responses", "rerank", "strea
 _DEFAULT_OTLP_ENDPOINT: Final = "http://localhost:4318"
 _OTLP_PROTOCOL: Final = "http/protobuf"
 _INSTRUMENTATION_SCOPE: Final = "slm_server.telemetry"
+
+# Bounded so a Collector that accepts a connection and then stalls cannot hold a
+# shutdown open for the SDK's much longer default.
+_EXPORT_TIMEOUT_SECONDS: Final = 5
 
 # gen_ai.operation.name per emit path. Semantic conventions name "chat"; they
 # define no rerank operation, so that value is this project's own (ADR-0129 D2:
@@ -140,7 +145,30 @@ def _build_exporter() -> OTLPSpanExporter:
     Returns:
         An exporter pointed at the Collector's traces endpoint.
     """
-    return OTLPSpanExporter(endpoint=_settings.traces_endpoint)
+    return OTLPSpanExporter(endpoint=_settings.traces_endpoint, timeout=_EXPORT_TIMEOUT_SECONDS)
+
+
+def _without_userinfo(url: str) -> str:
+    """Strip any ``user:password@`` from a URL before it is published.
+
+    The effective-configuration artifact is fetched by a verifier on another host,
+    so a credential embedded in the endpoint would be disclosed to anything that
+    can reach this router. The expected configuration is credential-free loopback;
+    this exists so that an operator who does embed one does not leak it by
+    publishing the artifact.
+
+    Args:
+        url: The configured endpoint.
+
+    Returns:
+        The same URL with any userinfo component removed.
+    """
+    parts = urlsplit(url)
+    if "@" not in parts.netloc:
+        return url
+    return urlunsplit(
+        (parts.scheme, parts.netloc.rsplit("@", 1)[1], parts.path, parts.query, parts.fragment)
+    )
 
 
 def init_tracing() -> None:
@@ -203,8 +231,8 @@ def effective_config() -> dict[str, object]:
     """
     return {
         "service_name": _settings.service_name,
-        "otlp_endpoint": _settings.otlp_endpoint,
-        "otlp_traces_endpoint": _settings.traces_endpoint,
+        "otlp_endpoint": _without_userinfo(_settings.otlp_endpoint),
+        "otlp_traces_endpoint": _without_userinfo(_settings.traces_endpoint),
         "otlp_protocol": _OTLP_PROTOCOL,
         "telemetry_enabled": _settings.enabled,
         "tracer_provider_initialised": _provider is not None,
