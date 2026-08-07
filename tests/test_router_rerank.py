@@ -1,6 +1,7 @@
 """Tests for POST /v1/rerank routing."""
 
 import asyncio
+from collections.abc import Mapping
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -23,6 +24,19 @@ _TELEMETRY_KEYS = {
     # invariant that every endpoint ships an identical key set.
     "ttfb_ms", "heartbeat_count", "client_disconnected",
 }
+
+
+def _capture_emitted(monkeypatch: pytest.MonkeyPatch) -> tuple[list[dict], list[str]]:
+    """Intercept span emission, returning the docs and their emit-path values."""
+    docs: list[dict] = []
+    emit_paths: list[str] = []
+
+    def fake_emit(doc: dict, *, emit_path: str, headers: Mapping[str, str]) -> None:
+        docs.append(doc)
+        emit_paths.append(emit_path)
+
+    monkeypatch.setattr(router_module, "emit_request_span", fake_emit)
+    return docs, emit_paths
 
 
 def _rerank_model_def() -> ModelDefinition:
@@ -159,12 +173,7 @@ async def test_rerank_ships_request_complete_consistent_schema(
 ) -> None:
     """Rerank ships a request_complete doc with EXACTLY the chat schema: generation-only
     fields present-but-None, trace context from headers, usage carried through."""
-    captured: list[dict] = []
-
-    async def fake_ship(doc: dict) -> None:
-        captured.append(doc)
-
-    monkeypatch.setattr(router_module, "ship_request_complete", fake_ship)
+    captured, emit_paths = _capture_emitted(monkeypatch)
 
     fake_http = MagicMock()
     fake_http.post = AsyncMock(
@@ -201,18 +210,14 @@ async def test_rerank_ships_request_complete_consistent_schema(
     # generation-only fields are not applicable to a reranker → present but None
     for f in ("completion_tokens", "prefill_ms", "decode_ms", "prompt_n", "predicted_n", "cache_reuse"):
         assert doc[f] is None
+    assert emit_paths == ["rerank"]
 
 
 async def test_rerank_ships_telemetry_on_backend_error_status(
     monkeypatch: pytest.MonkeyPatch, _telemetry_app_setup: ModelConfig
 ) -> None:
     """Telemetry is emitted even when the backend returns a 4xx/5xx, with status recorded."""
-    captured: list[dict] = []
-
-    async def fake_ship(doc: dict) -> None:
-        captured.append(doc)
-
-    monkeypatch.setattr(router_module, "ship_request_complete", fake_ship)
+    captured, emit_paths = _capture_emitted(monkeypatch)
 
     fake_http = MagicMock()
     fake_http.post = AsyncMock(
@@ -229,6 +234,7 @@ async def test_rerank_ships_telemetry_on_backend_error_status(
     assert doc.keys() == _TELEMETRY_KEYS
     assert doc["status"] == 500
     assert doc["prompt_tokens"] is None  # no usage in error body
+    assert emit_paths == ["rerank"]
 
 
 def test_rerank_backend_unreachable(router_client: TestClient) -> None:

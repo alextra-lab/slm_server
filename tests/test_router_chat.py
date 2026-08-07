@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Mapping
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -11,10 +12,30 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from starlette.testclient import TestClient
 
+import slm_server.telemetry as telemetry_module  # type: ignore[import-untyped]
 from slm_server import router as router_module  # type: ignore[import-untyped]
 from slm_server.config import ModelConfig, ModelDefinition  # type: ignore[import-untyped]
 
 app = router_module.app
+
+
+def _capture_emitted(monkeypatch: pytest.MonkeyPatch) -> tuple[list[dict], list[str]]:
+    """Intercept span emission at the router boundary.
+
+    Returns:
+        The telemetry docs and the emit-path values, in emission order. The docs
+        carry the schema these tests already assert; the paths are what AC-2
+        needs to tell one emit site from another.
+    """
+    docs: list[dict] = []
+    emit_paths: list[str] = []
+
+    def fake_emit(doc: dict, *, emit_path: str, headers: Mapping[str, str]) -> None:
+        docs.append(doc)
+        emit_paths.append(emit_path)
+
+    monkeypatch.setattr(router_module, "emit_request_span", fake_emit)
+    return docs, emit_paths
 
 
 def _chat_model_def() -> ModelDefinition:
@@ -162,12 +183,7 @@ async def test_request_complete_doc_llamacpp_fields(
     monkeypatch: pytest.MonkeyPatch, _telemetry_app_setup: ModelConfig
 ) -> None:
     """request_complete doc has correct llama.cpp fields (usage + timings)."""
-    captured: list[dict] = []
-
-    async def fake_ship(doc: dict) -> None:
-        captured.append(doc)
-
-    monkeypatch.setattr(router_module, "ship_request_complete", fake_ship)
+    captured, emit_paths = _capture_emitted(monkeypatch)
 
     fake_http = MagicMock()
     fake_http.post = AsyncMock(
@@ -213,18 +229,14 @@ async def test_request_complete_doc_llamacpp_fields(
     assert doc["total_ms"] >= 0
     assert doc["ts"] is not None
     assert doc["model_id"] == "mlx-community/Qwen3.5-9B-8bit"
+    assert emit_paths == ["chat"]
 
 
 async def test_request_complete_doc_mlx_no_timings(
     monkeypatch: pytest.MonkeyPatch, _telemetry_app_setup: ModelConfig
 ) -> None:
     """MLX backend: timings fields are None, token counts still present."""
-    captured: list[dict] = []
-
-    async def fake_ship(doc: dict) -> None:
-        captured.append(doc)
-
-    monkeypatch.setattr(router_module, "ship_request_complete", fake_ship)
+    captured, emit_paths = _capture_emitted(monkeypatch)
 
     fake_http = MagicMock()
     fake_http.post = AsyncMock(
@@ -270,7 +282,7 @@ async def test_routing_request_log_has_trace_headers(
         original_log_info(event, **kwargs)
 
     monkeypatch.setattr(router_module.log, "info", capturing_log_info)
-    monkeypatch.setattr(router_module, "ship_request_complete", AsyncMock())
+    _capture_emitted(monkeypatch)
 
     fake_http = MagicMock()
     fake_http.post = AsyncMock(
@@ -294,15 +306,22 @@ async def test_routing_request_log_has_trace_headers(
     assert logged[0]["session_id"] == "sess-3"
 
 
-async def test_es_ship_failure_does_not_break_response(
+async def test_telemetry_failure_does_not_break_response(
     monkeypatch: pytest.MonkeyPatch, _telemetry_app_setup: ModelConfig
 ) -> None:
-    """ES shipping raising an exception must not break the HTTP response (fail-soft)."""
+    """A broken tracer must not break the HTTP response (AC-6, fail-soft).
 
-    async def fake_ship_raising(doc: dict) -> None:
-        raise RuntimeError("ES is down")
+    The real ``emit_request_span`` is left in place and the tracer beneath it is
+    broken instead. Substituting a raising fake for the function would only prove
+    that a fake raises: emission is now a direct call, so the guard being tested
+    is the one inside the real function.
+    """
 
-    monkeypatch.setattr(router_module, "ship_request_complete", fake_ship_raising)
+    class _ExplodingProvider:
+        def get_tracer(self, *args: object, **kwargs: object) -> object:
+            raise RuntimeError("tracer is broken")
+
+    monkeypatch.setattr(telemetry_module, "_provider", _ExplodingProvider())
 
     fake_http = MagicMock()
     fake_http.post = AsyncMock(
@@ -326,49 +345,56 @@ async def test_es_ship_failure_does_not_break_response(
     assert response.status_code == 200
 
 
-async def test_url_unset_no_ship_call(
+async def test_no_request_leaves_the_backend_on_any_emit_path(
     monkeypatch: pytest.MonkeyPatch, _telemetry_app_setup: ModelConfig
 ) -> None:
-    """When SLM_ES_URL is not set, ship_request_complete is still scheduled but
-    itself is a no-op — the router always calls create_task (the guard is inside
-    ship_request_complete). Verify the response succeeds and no ES POST is made."""
-    import slm_server.telemetry as tel
+    """AC-3: exercising the emit paths produces no outbound Elasticsearch write.
 
-    monkeypatch.setattr(tel, "_ES_URL", None)
+    The removed shipper POSTed each document to an index URL. Asserting that the
+    only outbound requests are backend calls catches its return in any form —
+    including a writer pointed at an undated index, which deleting only the date
+    formatter would have left running.
 
-    es_posted = []
+    Covers the two buffered paths this fixture reaches. The streaming site is
+    covered by test_streaming_telemetry_emitted_after_stream_completes and rerank
+    by test_router_rerank.py; the categorical claim — that no writer survives
+    anywhere in src/ — is test_telemetry.py's source scan.
+    """
+    _, emit_paths = _capture_emitted(monkeypatch)
+    requested: list[str] = []
 
-    async def fake_ship(doc: dict) -> None:
-        # Delegates to real telemetry which will short-circuit on _ES_URL=None
-        # We just capture if it was called at all
-        es_posted.append(doc)
-
-    monkeypatch.setattr(router_module, "ship_request_complete", fake_ship)
-
-    fake_http = MagicMock()
-    fake_http.post = AsyncMock(
-        return_value=httpx.Response(
+    async def recording_post(url: str, **kwargs: object) -> httpx.Response:
+        requested.append(url)
+        return httpx.Response(
             200,
             content=_sse_body_no_timings(),
             headers={"content-type": "text/event-stream"},
         )
-    )
+
+    fake_http = MagicMock()
+    fake_http.post = recording_post
     app.state.http_client = fake_http
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        response = await client.post(
+        chat = await client.post(
             "/v1/chat/completions",
             json={
                 "model": "mlx-community/Qwen3.5-9B-8bit",
                 "messages": [{"role": "user", "content": "hi"}],
             },
+        )
+        responses = await client.post(
+            "/v1/responses",
+            json={"model": "mlx-community/Qwen3.5-9B-8bit", "input": "hi"},
         )
 
     await asyncio.sleep(0)
 
-    assert response.status_code == 200
-    # When URL is unset the real ship_request_complete is a no-op — no httpx POST
-    # This test verifies the router still succeeds (the telemetry unit test covers the no-op)
+    assert chat.status_code == 200
+    assert responses.status_code == 200
+    assert emit_paths == ["chat", "responses"]
+    assert requested, "no backend call was recorded — the test proved nothing"
+    assert all(url.startswith("http://localhost:8501/") for url in requested), requested
 
 
 # ─── FRE-980: SSE pass-through streaming + prefill heartbeat ──────────────────
@@ -496,12 +522,7 @@ async def test_streaming_telemetry_emitted_after_stream_completes(
     monkeypatch: pytest.MonkeyPatch, _telemetry_app_setup: ModelConfig
 ) -> None:
     """usage/timings must survive the switch to pass-through streaming."""
-    captured: list[dict] = []
-
-    async def fake_ship(doc: dict) -> None:
-        captured.append(doc)
-
-    monkeypatch.setattr(router_module, "ship_request_complete", fake_ship)
+    captured, emit_paths = _capture_emitted(monkeypatch)
 
     fake_http = _streaming_client(_streaming_response(_sse_stream_chunks()))
     app.state.http_client = fake_http
@@ -530,6 +551,7 @@ async def test_streaming_telemetry_emitted_after_stream_completes(
     assert doc["prefill_ms"] == 1200.0
     assert doc["cache_reuse"] == 80
     assert doc["status"] == 200
+    assert emit_paths == ["streaming"]
 
 
 def _sequenced_streaming_client(responses: list[httpx.Response]) -> MagicMock:
@@ -616,12 +638,7 @@ async def test_responses_streaming_emits_telemetry_with_trace_context(
     This endpoint emitted nothing before; the trace headers were never even read,
     so its documents would not have joined to gateway traces.
     """
-    captured: list[dict] = []
-
-    async def fake_ship(doc: dict) -> None:
-        captured.append(doc)
-
-    monkeypatch.setattr(router_module, "ship_request_complete", fake_ship)
+    captured, emit_paths = _capture_emitted(monkeypatch)
 
     fake_http = _streaming_client(_streaming_response(_sse_stream_chunks()))
     app.state.http_client = fake_http
@@ -648,18 +665,16 @@ async def test_responses_streaming_emits_telemetry_with_trace_context(
     assert doc["session_id"] == "sess-resp"
     assert doc["prompt_tokens"] == 100
     assert doc["ttfb_ms"] is not None
+    # A streaming /v1/responses reply completes at the streaming emit site, which
+    # is the site AC-2 stratifies by — not at the buffered "responses" one.
+    assert emit_paths == ["streaming"]
 
 
 async def test_responses_non_streaming_emits_telemetry(
     monkeypatch: pytest.MonkeyPatch, _telemetry_app_setup: ModelConfig
 ) -> None:
     """The non-streaming /v1/responses path was dark too — it ships now."""
-    captured: list[dict] = []
-
-    async def fake_ship(doc: dict) -> None:
-        captured.append(doc)
-
-    monkeypatch.setattr(router_module, "ship_request_complete", fake_ship)
+    captured, emit_paths = _capture_emitted(monkeypatch)
 
     fake_http = MagicMock()
     fake_http.post = AsyncMock(
@@ -689,6 +704,7 @@ async def test_responses_non_streaming_emits_telemetry(
     assert doc["prompt_tokens"] == 7
     # Streaming-only fields stay None on the buffered path.
     assert doc["ttfb_ms"] is None
+    assert emit_paths == ["responses"]
 
 
 async def test_streaming_telemetry_records_ttfb_and_heartbeats(
@@ -700,12 +716,7 @@ async def test_streaming_telemetry_records_ttfb_and_heartbeats(
     that computed slowly; ttfb_ms against prefill_ms separates them.
     """
     monkeypatch.setattr(router_module, "_SSE_HEARTBEAT_INTERVAL_SECONDS", 0.05)
-    captured: list[dict] = []
-
-    async def fake_ship(doc: dict) -> None:
-        captured.append(doc)
-
-    monkeypatch.setattr(router_module, "ship_request_complete", fake_ship)
+    captured, emit_paths = _capture_emitted(monkeypatch)
 
     fake_http = _streaming_client(_streaming_response(_sse_stream_chunks(), first_delay=0.3))
     app.state.http_client = fake_http
@@ -738,12 +749,7 @@ async def test_streaming_telemetry_ttfb_excludes_heartbeats(
 ) -> None:
     """Keep-alives must not be mistaken for the first content byte."""
     monkeypatch.setattr(router_module, "_SSE_HEARTBEAT_INTERVAL_SECONDS", 5.0)
-    captured: list[dict] = []
-
-    async def fake_ship(doc: dict) -> None:
-        captured.append(doc)
-
-    monkeypatch.setattr(router_module, "ship_request_complete", fake_ship)
+    captured, emit_paths = _capture_emitted(monkeypatch)
 
     fake_http = _streaming_client(_streaming_response(_sse_stream_chunks()))
     app.state.http_client = fake_http
@@ -770,12 +776,7 @@ async def test_non_streaming_telemetry_omits_streaming_fields(
     monkeypatch: pytest.MonkeyPatch, _telemetry_app_setup: ModelConfig
 ) -> None:
     """Non-streaming requests keep the previous doc shape — fields present, None."""
-    captured: list[dict] = []
-
-    async def fake_ship(doc: dict) -> None:
-        captured.append(doc)
-
-    monkeypatch.setattr(router_module, "ship_request_complete", fake_ship)
+    captured, emit_paths = _capture_emitted(monkeypatch)
 
     fake_http = MagicMock()
     fake_http.post = AsyncMock(

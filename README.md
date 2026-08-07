@@ -390,6 +390,62 @@ All optional, via environment (`.env` is loaded by `start.sh`):
 Set `SLM_WATCHDOG_ENABLED=false` to fall back to the previous behaviour, where
 backends are started and never supervised.
 
+## Telemetry
+
+Every completed request becomes one OpenTelemetry span, exported over OTLP/HTTP
+to the OpenTelemetry Collector. The Collector is the single egress point for
+traces (ADR-0129 D5); nothing here writes to Elasticsearch, and no index name is
+formatted client-side any more.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `SLM_OTLP_ENDPOINT` | `http://localhost:4318` | Base OTLP/HTTP endpoint of the Collector |
+| `SLM_OTEL_ENABLED` | `true` | Set to `false` to export nothing |
+| `SLM_OTEL_SERVICE_NAME` | `slm-server` | Published as the `service.name` resource attribute |
+
+**Export is on by default**, unlike the Elasticsearch shipper it replaces, which
+did nothing until a URL was set. Telemetry that has to be remembered to switch on
+is the failure mode this change exists to end. The cost is that while the
+Collector is not running, the router logs a batch-export warning every few
+seconds; export is fail-soft, so requests are unaffected either way.
+
+**The caller's trace is continued, not replaced.** A W3C `traceparent` on the
+inbound request makes the span a child of the caller's span, inside the caller's
+trace — which is what puts SLM work inside the calling turn. A caller that sends
+no `traceparent` gets its own trace, and its legacy `X-Trace-Id` rides along as
+the `slm.client.trace_id` attribute so the join stays recoverable.
+
+Spans carry `gen_ai.*` semantic conventions (`gen_ai.request.model`,
+`gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`) plus a `slm.emit_path`
+attribute naming which of the four emit sites produced them — `chat`,
+`responses`, `rerank` or `streaming`. Without a distinct value per site, a path
+that stopped emitting would be indistinguishable from one that is merely idle.
+
+### `GET /v1/telemetry/effective-config`
+
+Reports the export configuration this process actually resolved:
+
+```bash
+curl -s localhost:8000/v1/telemetry/effective-config
+```
+
+```json
+{
+  "service_name": "slm-server",
+  "otlp_endpoint": "http://localhost:4318",
+  "otlp_traces_endpoint": "http://localhost:4318/v1/traces",
+  "otlp_protocol": "http/protobuf",
+  "telemetry_enabled": true,
+  "tracer_provider_initialised": true,
+  "emit_paths": ["chat", "responses", "rerank", "streaming"],
+  "elasticsearch_export": false
+}
+```
+
+It exists because the ADR-0129 acceptance verifier runs on a host that cannot
+otherwise inspect this one, and it is generated from live state rather than
+hand-written — so it cannot name an endpoint the exporter is not using.
+
 ## Troubleshooting
 
 ### Check backend health

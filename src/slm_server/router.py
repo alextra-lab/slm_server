@@ -4,7 +4,7 @@ import asyncio
 import contextlib
 import json
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
@@ -15,7 +15,12 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from structlog import get_logger
 
 from slm_server.config import ModelConfig, ModelDefinition, load_model_config
-from slm_server.telemetry import ship_request_complete
+from slm_server.telemetry import (
+    effective_config,
+    emit_request_span,
+    init_tracing,
+    shutdown_tracing,
+)
 from slm_server.watchdog import RouterWatchdog, classify_status
 from slm_server.watchdog import load_settings as load_watchdog_settings
 
@@ -68,13 +73,18 @@ async def lifespan(app: FastAPI):
     )
     log.info("watchdog_initialised", **watchdog_settings.as_log_fields())
 
+    # Traces leave over OTLP to the Collector (FRE-1071, ADR-0129 D5). Installed
+    # here rather than lazily so no served request pays for the exporter thread.
+    init_tracing()
+
     yield
 
-    # Cleanup: stop the sweeper, then close the HTTP client
+    # Cleanup: stop the sweeper, flush spans, then close the HTTP client
     if sweep_task is not None:
         sweep_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await sweep_task
+    shutdown_tracing()
     await app.state.http_client.aclose()
     log.info("application_shutdown")
 
@@ -598,6 +608,7 @@ async def _stream_backend_response(
     trace_id: str | None = None,
     span_id: str | None = None,
     session_id: str | None = None,
+    carrier: Mapping[str, str] | None = None,
     emit_telemetry: bool = True,
     in_flight: _InFlightHandle | None = None,
 ) -> JSONResponse | StreamingResponse:
@@ -617,6 +628,8 @@ async def _stream_backend_response(
         trace_id: Caller trace id, for telemetry.
         span_id: Caller span id, for telemetry.
         session_id: Caller session id, for telemetry.
+        carrier: Inbound request headers, so the exported span continues the
+            caller's trace. This helper has no Request of its own.
         emit_telemetry: Whether to emit request_complete. False for endpoints
             that have never emitted it, so this fix does not silently change
             what lands in the telemetry index.
@@ -655,7 +668,7 @@ async def _stream_backend_response(
             client_disconnected=client_disconnected,
         )
         log.info("request_complete", **tel_doc)
-        asyncio.create_task(ship_request_complete(tel_doc))
+        emit_request_span(tel_doc, emit_path="streaming", headers=carrier or {})
 
     if response.status_code >= 400:
         if in_flight is not None:
@@ -821,6 +834,7 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
                 trace_id=trace_id,
                 span_id=span_id,
                 session_id=session_id,
+                carrier=dict(request.headers),
                 in_flight=in_flight,
             )
 
@@ -854,7 +868,7 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
             status=response.status_code,
         )
         log.info("request_complete", **tel_doc)
-        asyncio.create_task(ship_request_complete(tel_doc))
+        emit_request_span(tel_doc, emit_path="chat", headers=dict(request.headers))
 
         # Log error responses for debugging
         if response.status_code >= 400:
@@ -1116,8 +1130,8 @@ async def rerank(request: Request) -> JSONResponse:
         except Exception:
             usage = None
 
-        # Same schema as chat so slm-requests-* is uniform across backends. A reranker has
-        # no decode phase, so completion/decode/predicted/cache fields stay None (via timings=None).
+        # Same schema as chat so the emitted telemetry is uniform across backends. A reranker
+        # has no decode phase, so completion/decode/predicted/cache stay None (via timings=None).
         tel_doc = _build_request_telemetry(
             trace_id=trace_id,
             span_id=span_id,
@@ -1131,7 +1145,7 @@ async def rerank(request: Request) -> JSONResponse:
             status=response.status_code,
         )
         log.info("request_complete", **tel_doc)
-        asyncio.create_task(ship_request_complete(tel_doc))
+        emit_request_span(tel_doc, emit_path="rerank", headers=dict(request.headers))
 
         if response.status_code >= 400:
             try:
@@ -1257,8 +1271,10 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
         # Streaming requests are proxied through unbuffered, same as
         # /v1/chat/completions (FRE-980). The 404/422 fallback still works
         # because send(stream=True) exposes the status before the body is read.
-        # Telemetry stays off here: this endpoint has never emitted
-        # request_complete, and the streaming fix should not change that.
+        # Both streaming branches below emit telemetry under the "streaming"
+        # emit path. (Until FRE-1071 a comment here claimed telemetry stayed off
+        # for this endpoint; it had been stale since FRE-980 wired these calls to
+        # the emitting helper with its default emit_telemetry=True.)
         if body_forward.get("stream"):
             stream_t0 = time.monotonic()
             # Stall-tracked like /v1/chat/completions: a wedge here looks the
@@ -1286,6 +1302,7 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
                     trace_id=trace_id,
                     span_id=span_id,
                     session_id=session_id,
+                    carrier=dict(request.headers),
                     in_flight=in_flight,
                 )
 
@@ -1326,6 +1343,7 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
                 trace_id=trace_id,
                 span_id=span_id,
                 session_id=session_id,
+                carrier=dict(request.headers),
                 in_flight=in_flight,
             )
 
@@ -1352,7 +1370,7 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
                 status=response.status_code,
             )
             log.info("request_complete", **tel_doc)
-            asyncio.create_task(ship_request_complete(tel_doc))
+            emit_request_span(tel_doc, emit_path="responses", headers=dict(request.headers))
 
         t0 = time.monotonic()
 
@@ -1600,6 +1618,18 @@ async def backends_health(request: Request) -> JSONResponse:
             }
 
     return JSONResponse(content=health_status)
+
+
+@app.get("/v1/telemetry/effective-config")
+async def telemetry_effective_config() -> JSONResponse:
+    """Report the trace-export configuration this process actually resolved.
+
+    Published because the ADR-0129 acceptance verifier runs on a host that cannot
+    otherwise inspect this one, and a hand-written declaration would only say
+    what the configuration is meant to be. This is generated from live state, so
+    it cannot name an endpoint the exporter is not using.
+    """
+    return JSONResponse(content=effective_config())
 
 
 @app.get("/health")
