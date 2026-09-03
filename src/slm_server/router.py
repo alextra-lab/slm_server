@@ -1561,6 +1561,11 @@ async def list_models(request: Request) -> JSONResponse:
             "supports_function_calling": model_def.supports_function_calling,
         }
         for model_def in request.app.state.model_config.models.values()
+        # Disabled entries have no backend listening. _get_model_definition already
+        # refuses them, so advertising them here only invites a request that cannot
+        # be served. Two entries may also share a port with only one enabled, and
+        # listing both makes the choice look arbitrary.
+        if model_def.enabled
     ]
 
     return JSONResponse(
