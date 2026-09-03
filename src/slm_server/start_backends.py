@@ -470,9 +470,24 @@ def build_mlx_rerank_command(
 
 
 def find_native_llama_server() -> str | None:
-    """Return path to native llama-server binary (e.g. from brew install llama.cpp), or None."""
-    path = shutil.which("llama-server")
-    return path
+    """Return path to the native llama-server binary, or None if there is none.
+
+    SLM_LLAMA_SERVER_BIN wins when it is set, so the repo-maintained build beside
+    this checkout takes precedence over whatever happens to be on PATH. Homebrew's
+    llama.cpp trails upstream and cannot load every architecture in models.yaml,
+    so PATH is the fallback rather than the default. See scripts/build_llama.sh.
+    """
+    override = os.environ.get("SLM_LLAMA_SERVER_BIN")
+    if override:
+        candidate = Path(override).expanduser()
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+        log.warning(
+            "llama_server_override_unusable",
+            path=override,
+            message="SLM_LLAMA_SERVER_BIN is not an executable file; falling back to PATH",
+        )
+    return shutil.which("llama-server")
 
 
 def build_llama_native_command(
@@ -506,6 +521,7 @@ def build_llama_native_command(
     cache_prompt: bool | None = None,
     spec_type: str | None = None,
     spec_draft_n_max: int | None = None,
+    spec_model_path: str | Path | None = None,
     verbose: bool | None = None,
 ) -> list[str]:
     """Build command for native llama-server (e.g. from brew install llama.cpp).
@@ -593,6 +609,14 @@ def build_llama_native_command(
         cmd.append("--cont-batching")
     if cache_prompt is not None:
         cmd.append("--cache-prompt" if cache_prompt else "--no-cache-prompt")
+    # -md must precede the spec flags so llama-server associates the draft head with
+    # the target model. Auto-discovery does not look inside an MTP/ subfolder, so a
+    # sidecar draft model has to be named explicitly.
+    if spec_model_path is not None:
+        draft = Path(spec_model_path).expanduser()
+        if not draft.is_file():
+            raise FileNotFoundError(f"spec_model_path does not exist: {draft}")
+        cmd.extend(["-md", str(draft)])
     if spec_type is not None:
         cmd.extend(["--spec-type", spec_type])
     if spec_draft_n_max is not None:
@@ -889,6 +913,7 @@ def start_model_server(model_def, config: ModelConfig) -> subprocess.Popen | Non
                     cache_prompt=getattr(model_def, "cache_prompt", None),
                     spec_type=getattr(model_def, "spec_type", None),
                     spec_draft_n_max=getattr(model_def, "spec_draft_n_max", None),
+                    spec_model_path=getattr(model_def, "spec_model_path", None),
                     verbose=getattr(model_def, "verbose", None),
                 )
             else:

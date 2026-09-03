@@ -122,6 +122,10 @@ class ModelDefinition(BaseModel):
         None,
         description="Max draft tokens for speculative decoding (llamacpp native --spec-draft-n-max). Only used when backend is llamacpp.",
     )
+    spec_model_path: str | None = Field(
+        None,
+        description="Path to a separate draft model for speculative decoding (llamacpp native -md). Needed when the MTP head ships as a sidecar GGUF rather than inside the main model. Only used when backend is llamacpp.",
+    )
     verbose: bool | None = Field(
         None,
         description="Enable verbose llama-server logging (native --verbose). Only used when backend is llamacpp.",

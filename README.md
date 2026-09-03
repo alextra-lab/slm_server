@@ -17,7 +17,7 @@ Backend Model Servers (MLX/llama.cpp on ports 8501, 8502, ...)
 - macOS with Apple Silicon — required for MLX backend; llama.cpp works cross-platform
 - Python 3.12+
 - [uv](https://github.com/astral-sh/uv) package manager
-- For llama.cpp: `llama-server` on PATH (e.g. `brew install llama.cpp`) — required for rerank and Qwen3.5/newer architectures
+- For llama.cpp: run `./scripts/build_llama.sh`, then set `SLM_LLAMA_SERVER_BIN` in `.env` — required for rerank and Qwen3.5/newer architectures. A `llama-server` on PATH is used as a fallback, but Homebrew's build trails upstream and cannot load newer architectures such as `qwen4exp`.
 
 ## Quick Start
 
@@ -105,6 +105,7 @@ Copy `config/models.yaml.example` to `config/models.yaml` and set your model pat
 | `cache_prompt` | — | Enable/disable prompt prefix caching (`true` → `--cache-prompt`, `false` → `--no-cache-prompt`) — native `llama-server` only |
 | `spec_type` | — | Speculative decoding type (e.g. `draft-mtp`) — native `llama-server` only |
 | `spec_draft_n_max` | — | Max draft tokens for speculative decoding (e.g. `2`) — native `llama-server` only |
+| `spec_model_path` | — | Path to a sidecar draft-head GGUF (native `-md`) — needed when the MTP head ships beside the model rather than inside it, as for Qwen3.8-Flash-Next |
 | `verbose` | — | Enable verbose `llama-server` logging (`--verbose`); stderr is redirected to `logs/llama-<id>-<port>.log` — native `llama-server` only |
 | `mmproj_path` | `null` | Path to multimodal projector `.gguf` — required when `model_type: multimodal` |
 
@@ -227,7 +228,7 @@ Router health check.
 ### llama.cpp
 
 - Install: `uv sync --extra llamacpp` (installs `llama-cpp-python[server]` as fallback)
-- **Native `llama-server`** (e.g. `brew install llama.cpp`) is used automatically when found on PATH and is required for:
+- **Native `llama-server`** (built by `./scripts/build_llama.sh`, selected via `SLM_LLAMA_SERVER_BIN`, else found on PATH) is required for:
   - `model_type: rerank`
   - Models with newer architectures (Qwen3.5, etc.) not yet supported by the PyPI build
   - `kv_unified`, `fit`, `cont_batching`, and `cache_prompt` flags
@@ -471,8 +472,15 @@ Each model must have a unique port. Config validation warns about port conflicts
 - Check logs for error messages
 
 ### "unknown model architecture" error (llamacpp)
-The PyPI build of `llama-cpp-python` may not support newer model architectures. Install native `llama-server`:
+Neither the PyPI `llama-cpp-python` build nor Homebrew's `llama.cpp` tracks upstream closely enough for the
+newest architectures. Homebrew v0.3.0 (build 10621) cannot load Qwen3.8-Flash-Next at all, failing with
+`unknown model architecture: 'qwen4exp'`. Build the pinned native binary instead:
 ```bash
-brew install llama.cpp
+./scripts/build_llama.sh
 ```
-The server detects it on PATH and uses it automatically.
+Then point the launcher at it in `.env`:
+```
+SLM_LLAMA_SERVER_BIN=/Users/Alex/Dev/llama.cpp/build/bin/llama-server
+```
+`SLM_LLAMA_SERVER_BIN` takes precedence; a `llama-server` on PATH is the fallback. The pinned commit lives in
+`config/llama.cpp.pin`.
