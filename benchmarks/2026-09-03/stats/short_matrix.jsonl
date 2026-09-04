@@ -1,0 +1,8 @@
+{"model": "qwen36", "prompt": "trivial", "completion_tok": 158, "answer_chars": 1, "reasoning_chars": 510, "finish": "stop", "decode_tok_s": 86.93, "wall_s": 1.97}
+{"model": "qwen36", "prompt": "easy", "completion_tok": 153, "answer_chars": 31, "reasoning_chars": 563, "finish": "stop", "decode_tok_s": 77.06, "wall_s": 2.09}
+{"model": "qwen36", "prompt": "hard", "completion_tok": 1585, "answer_chars": 1177, "reasoning_chars": 3144, "finish": "stop", "decode_tok_s": 81.8, "wall_s": 19.57}
+{"model": "qwen36", "prompt": "essay", "completion_tok": 2373, "answer_chars": 3264, "reasoning_chars": 8721, "finish": "stop", "decode_tok_s": 79.78, "wall_s": 29.88}
+{"model": "flash", "prompt": "trivial", "completion_tok": 27, "answer_chars": 1, "reasoning_chars": 82, "finish": "stop", "decode_tok_s": 41.1, "wall_s": 0.95}
+{"model": "flash", "prompt": "easy", "completion_tok": 31, "answer_chars": 35, "reasoning_chars": 90, "finish": "stop", "decode_tok_s": 44.68, "wall_s": 0.92}
+{"model": "flash", "prompt": "hard", "completion_tok": 480, "answer_chars": 753, "reasoning_chars": 594, "finish": "stop", "decode_tok_s": 39.67, "wall_s": 12.5}
+{"model": "flash", "prompt": "essay", "completion_tok": 1104, "answer_chars": 4006, "reasoning_chars": 800, "finish": "stop", "decode_tok_s": 37.18, "wall_s": 29.99}
