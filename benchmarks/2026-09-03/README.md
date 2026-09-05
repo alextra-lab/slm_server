@@ -26,6 +26,8 @@ them with that caveat.
   runs the matrix**; the loop is at module level.
 - `harness/short_matrix.py` — the 4-prompt comparison at a fixed depth.
 - `harness/edges*.py` — budget, difficulty and reasoning-effort sweeps.
+- `harness/multiturn_stall.py` — replays the growing-conversation shape that
+  stalled on 2026-09-05. See `docs/incidents/2026-09-05-flash-next-prefill-stall.md`.
 - `harness/concurrency.py` — concurrency scaling, MTP accept rate under load,
   cold-start penalty, over-subscription. Fixed token count per request and a
   unique prefix per prompt, so the aggregate figure is not inflated by shared KV.
