@@ -35,6 +35,23 @@ if ! git cat-file -e "$PIN^{commit}" 2>/dev/null; then
     git fetch origin "pull/28243/head:pr28243" --force || git fetch origin
 fi
 git checkout --detach "$PIN"
+
+# Upstream master merged on top of the pinned PR branch (2026-09-10).
+# The pin (#28243) is an unmerged draft, so upstream fixes cannot arrive by moving
+# the pin. They are merged in instead, at a fixed master commit so the build stays
+# reproducible. This merge subsumes the earlier GDN cherry-pick (#28068), which is
+# now in master. Verified conflict-free; MTP acceptance unchanged at 0.703.
+# Key contents: #28330 (skip the unused indexer V cache on qwen4exp),
+# #28390 (single-device drafter skips the meta backend wrapper),
+# #28302 (context-checkpoint eviction only when the list is full).
+MASTER_PIN="${LLAMA_MASTER_PIN:-311d4211b}"
+if ! git cat-file -e "$MASTER_PIN^{commit}" 2>/dev/null; then
+    echo "==> fetching master for $MASTER_PIN"
+    git fetch origin master
+fi
+echo "==> merging master $MASTER_PIN"
+git -c user.name=build -c user.email=build@local merge --no-edit "$MASTER_PIN"
+
 echo "==> HEAD: $(git log -1 --format='%h %ad %s' --date=short)"
 
 # A moved build tree keeps absolute @rpath entries and the binary will not start,
