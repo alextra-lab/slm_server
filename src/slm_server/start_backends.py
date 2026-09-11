@@ -769,6 +769,9 @@ def build_llamacpp_command(
     return cmd
 
 
+LOG_DIR = Path(__file__).resolve().parents[2] / "logs"
+
+
 def start_model_server(model_def, config: ModelConfig) -> subprocess.Popen | None:
     """Start a single model server.
 
@@ -955,30 +958,34 @@ def start_model_server(model_def, config: ModelConfig) -> subprocess.Popen | Non
         kw = json.dumps(chat_template_kwargs)
         run_env["LLAMA_CHAT_TEMPLATE_KWARGS"] = kw
         run_env["LLAMA_ARG_CHAT_TEMPLATE_KWARGS"] = kw
-    # When verbose logging is enabled, redirect stderr to a file instead of an
-    # unread PIPE. A running --verbose server would otherwise fill the pipe buffer
-    # (~64KB) and block. The file is also what makes the output reviewable.
-    verbose_log_path: Path | None = None
-    if getattr(model_def, "verbose", None):
-        log_dir = Path(__file__).resolve().parents[2] / "logs"
-        log_dir.mkdir(exist_ok=True)
-        safe_id = re.sub(r"[^A-Za-z0-9._-]", "_", model_def.id)
-        verbose_log_path = log_dir / f"llama-{safe_id}-{model_def.port}.log"
+    # stderr always goes to a file, never an unread PIPE. llama.cpp logs every
+    # request at INFO level; an unread pipe fills at ~64 KB on macOS, the logger
+    # then queues 512 more lines and blocks every thread that logs. The server
+    # froze mid-request after 60-150 requests and ignored SIGTERM, which the
+    # watchdog saw as "no first byte within 300s" (reproduced 2026-09-11).
+    # The previous run's log is kept as .prev so a restart after a stall does
+    # not erase the evidence of what that process was doing.
+    LOG_DIR.mkdir(exist_ok=True)
+    safe_id = re.sub(r"[^A-Za-z0-9._-]", "_", model_def.id)
+    prefix = "llama" if model_def.backend == "llamacpp" else model_def.backend
+    stderr_log_path = LOG_DIR / f"{prefix}-{safe_id}-{model_def.port}.log"
+    if stderr_log_path.exists():
+        stderr_log_path.replace(stderr_log_path.with_name(stderr_log_path.name + ".prev"))
 
     try:
         max_attempts = 3 if model_def.backend == "mlx" else 1
         for attempt in range(1, max_attempts + 1):
-            verbose_log_fh = open(verbose_log_path, "w") if verbose_log_path else None
+            # Append, so an MLX retry keeps the failed attempt's output.
+            stderr_log_fh = open(stderr_log_path, "a")
             process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.DEVNULL,
-                stderr=verbose_log_fh if verbose_log_fh else subprocess.PIPE,
+                stderr=stderr_log_fh,
                 text=True,
                 env=run_env,
             )
             # Child holds its own dup'd fd; the parent's copy can be closed now.
-            if verbose_log_fh:
-                verbose_log_fh.close()
+            stderr_log_fh.close()
 
             # Give the process a moment to fail fast if there are startup errors
             time.sleep(0.5)
@@ -991,23 +998,16 @@ def start_model_server(model_def, config: ModelConfig) -> subprocess.Popen | Non
                     backend=model_def.backend,
                     port=model_def.port,
                     pid=process.pid,
-                    verbose_log=str(verbose_log_path) if verbose_log_path else None,
+                    stderr_log=str(stderr_log_path),
                 )
                 return process
 
             # Process exited immediately - startup failure; log stderr for debugging.
-            # When verbose-redirected to a file, stderr isn't a PIPE: read the file.
             stderr_out = ""
-            if verbose_log_path is not None:
-                try:
-                    stderr_out = verbose_log_path.read_text().strip()[-4000:]
-                except Exception:
-                    pass
-            elif process.stderr:
-                try:
-                    stderr_out = (process.stderr.read() or "").strip()
-                except Exception:
-                    pass
+            try:
+                stderr_out = stderr_log_path.read_text().strip()[-4000:]
+            except Exception:
+                pass
 
             is_mlx_bootstrap_flake = (
                 model_def.backend == "mlx"

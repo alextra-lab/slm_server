@@ -107,7 +107,7 @@ Copy `config/models.yaml.example` to `config/models.yaml` and set your model pat
 | `spec_type` | — | Speculative decoding type (e.g. `draft-mtp`) — native `llama-server` only |
 | `spec_draft_n_max` | — | Max draft tokens for speculative decoding (e.g. `2`) — native `llama-server` only |
 | `spec_model_path` | — | Path to a sidecar draft-head GGUF (native `-md`) — needed when the MTP head ships beside the model rather than inside it, as for Qwen3.8-Flash-Next |
-| `verbose` | — | Enable verbose `llama-server` logging (`--verbose`); stderr is redirected to `logs/llama-<id>-<port>.log` — native `llama-server` only |
+| `verbose` | — | Enable verbose `llama-server` logging (`--verbose`) — native `llama-server` only. Every backend's stderr goes to `logs/<llama\|mlx\|mlx-rerank>-<id>-<port>.log` whether or not this is set; the previous run's log is kept as `.log.prev` |
 | `mmproj_path` | `null` | Path to multimodal projector `.gguf` — required when `model_type: multimodal` |
 
 ### Model Path
