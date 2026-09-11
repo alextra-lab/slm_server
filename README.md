@@ -94,6 +94,7 @@ Copy `config/models.yaml.example` to `config/models.yaml` and set your model pat
 | `presence_penalty` | — | Presence penalty (discourages already-seen tokens) |
 | `repetition_penalty` | — | Repeat penalty multiplier (`1.0` = disabled) |
 | `n_predict` | — | Maximum tokens to generate per request |
+| `ubatch_size` | — | Physical micro-batch size for prompt processing (`--ubatch-size`; llama.cpp default `512`, capped at the logical batch of `2048`). `2048` ran long-context warm prefill ~13% faster on Qwen3.8-Flash-Next — native `llama-server` only |
 | `cache_type_k` | — | KV cache type for K (e.g. `q8_0`, `f16`) |
 | `cache_type_v` | — | KV cache type for V (e.g. `q8_0`, `f16`) |
 | `cache_ram` | — | Max host context/state cache in MiB (`--cache-ram`; `0` disables, `-1` unlimited) — native `llama-server` only |

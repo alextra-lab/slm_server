@@ -513,6 +513,7 @@ def build_llama_native_command(
     cache_type_k: str | None = None,
     cache_type_v: str | None = None,
     cache_ram: int | None = None,
+    ubatch_size: int | None = None,
     kv_offload: bool | None = None,
     flash_attn: bool | str | None = None,
     fit: bool | str | None = None,
@@ -597,6 +598,8 @@ def build_llama_native_command(
         cmd.extend(["--cache-type-v", cache_type_v])
     if cache_ram is not None:
         cmd.extend(["--cache-ram", str(cache_ram)])
+    if ubatch_size is not None:
+        cmd.extend(["--ubatch-size", str(ubatch_size)])
     if kv_offload is not None:
         cmd.append("--kv-offload" if kv_offload else "--no-kv-offload")
     if flash_attn is not None:
@@ -905,6 +908,7 @@ def start_model_server(model_def, config: ModelConfig) -> subprocess.Popen | Non
                     cache_type_k=getattr(model_def, "cache_type_k", None),
                     cache_type_v=getattr(model_def, "cache_type_v", None),
                     cache_ram=getattr(model_def, "cache_ram", None),
+                    ubatch_size=getattr(model_def, "ubatch_size", None),
                     kv_offload=getattr(model_def, "kv_offload", None),
                     flash_attn=getattr(model_def, "flash_attn", None),
                     fit=getattr(model_def, "fit", None),
