@@ -1068,6 +1068,11 @@ def main() -> None:
     processes: list[tuple[str, subprocess.Popen]] = []
 
     def handle_shutdown_signal(signum, _frame) -> None:
+        # stop.sh signals both the uv wrapper and this process, and uv forwards
+        # its copy, so one shutdown arrives twice. A second KeyboardInterrupt
+        # raised inside _terminate_processes aborted the cleanup. Ignore repeats.
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
         signal_name = signal.Signals(signum).name
         log.info("shutdown_signal_received", signal=signal_name)
         raise KeyboardInterrupt
