@@ -84,6 +84,31 @@ BACKEND_FAULT_STATUSES: frozenset[int] = frozenset({408, 425, 429})
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
+# llama-server answers these with HTTP 500, but each describes the request, not the
+# backend's health. A conversation carrying a tool call truncated by max_tokens fails
+# to parse (ggml-org/llama.cpp#25510: it should be a 4xx), and a request can outgrow
+# the shared KV pool while other slots hold long contexts. A restart fixes neither and
+# kills every other in-flight request: on 2026-09-13 it caused three restarts overnight.
+REQUEST_ERROR_MARKERS: tuple[str, ...] = (
+    "Failed to parse tool call arguments",
+    "Failed to parse input",
+    "Context size has been exceeded",
+)
+
+
+def is_request_error(detail: object) -> bool:
+    """Say whether a backend error body describes the request rather than the backend.
+
+    Args:
+        detail: The parsed error body, or the raw text the backend returned.
+
+    Returns:
+        True when the body carries one of `REQUEST_ERROR_MARKERS`.
+    """
+    text = str(detail)
+    return any(marker in text for marker in REQUEST_ERROR_MARKERS)
+
+
 def classify_status(status: int) -> tuple[StatusVerdict, FailureKind | None]:
     """Decide what an HTTP status says about a backend's health.
 
@@ -529,6 +554,29 @@ class RouterWatchdog:
         )
         if tripped:
             self._request_restart(port, kind, detail)
+
+    def record_request_error(self, port: int, status: int, detail: str = "") -> None:
+        """Record a backend error that describes the request, not the backend.
+
+        Neither counted nor reset, like an unclassified status, but logged under
+        its own name so the cause stays visible. See `REQUEST_ERROR_MARKERS`.
+
+        Args:
+            port: Backend port that answered.
+            status: HTTP status it returned.
+            detail: The error message, trimmed for the log.
+        """
+        if not self.settings.enabled:
+            return
+        log.warning("watchdog_request_error_not_counted", port=port, status=status)
+        append_event(
+            self.settings.log_path,
+            "request_error",
+            port=port,
+            model_id=self._model_ids.get(port),
+            status=status,
+            detail=detail[:300],
+        )
 
     def record_unclassified(self, port: int, status: int) -> None:
         """Record a status the classifier had no opinion about.

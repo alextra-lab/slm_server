@@ -677,3 +677,34 @@ def test_a_disabled_watchdog_records_and_restarts_nothing(
         watchdog.record_failure(8502, "unreachable")
     assert wd.read_restart_requests(settings.request_dir) == []
     assert not settings.log_path.exists()
+
+
+@pytest.mark.parametrize(
+    "detail",
+    [
+        {
+            "error": {
+                "code": 500,
+                "message": "Failed to parse tool call arguments as JSON: "
+                "[json.exception.parse_error.101] parse error at line 1, column 12225",
+            }
+        },
+        {
+            "error": {
+                "code": 500,
+                "message": "Context size has been exceeded.",
+                "type": "server_error",
+            }
+        },
+        "Failed to parse input at pos 42",
+    ],
+)
+def test_request_errors_are_recognised(detail: object) -> None:
+    assert wd.is_request_error(detail) is True
+
+
+@pytest.mark.parametrize(
+    "detail", [{"error": {"code": 500, "message": "decode failed"}}, "Internal Server Error", None]
+)
+def test_other_errors_are_not_request_errors(detail: object) -> None:
+    assert wd.is_request_error(detail) is False

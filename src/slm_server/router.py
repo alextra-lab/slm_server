@@ -21,7 +21,7 @@ from slm_server.telemetry import (
     init_tracing,
     shutdown_tracing,
 )
-from slm_server.watchdog import RouterWatchdog, classify_status
+from slm_server.watchdog import RouterWatchdog, classify_status, is_request_error
 from slm_server.watchdog import load_settings as load_watchdog_settings
 
 log = get_logger(__name__)
@@ -123,6 +123,11 @@ async def _watchdog_outcome_middleware(request: Request, call_next):
     port = getattr(request.state, "backend_port", None)
     watchdog: RouterWatchdog | None = getattr(request.app.state, "watchdog", None)
     if port is None or watchdog is None:
+        return response
+
+    request_error = getattr(request.state, "request_error", None)
+    if request_error is not None:
+        watchdog.record_request_error(port, response.status_code, request_error)
         return response
 
     verdict, kind = classify_status(response.status_code)
@@ -621,6 +626,7 @@ async def _stream_backend_response(
     carrier: Mapping[str, str] | None = None,
     emit_telemetry: bool = True,
     in_flight: _InFlightHandle | None = None,
+    request: Request | None = None,
 ) -> JSONResponse | StreamingResponse:
     """Forward an open backend stream to the caller without buffering it.
 
@@ -697,6 +703,8 @@ async def _stream_backend_response(
             port=model_def.port,
             error_detail=error_detail,
         )
+        if request is not None and is_request_error(error_detail):
+            request.state.request_error = str(error_detail)[:500]
         _emit_telemetry(None, None, response.status_code)
         return JSONResponse(
             content=error_detail if isinstance(error_detail, dict) else {"error": error_detail},
@@ -846,6 +854,7 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
                 session_id=session_id,
                 carrier=dict(request.headers),
                 in_flight=in_flight,
+                request=request,
             )
 
         t0 = time.monotonic()
@@ -894,6 +903,8 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
                 port=model_def.port,
                 error_detail=error_detail,
             )
+            if request is not None and is_request_error(error_detail):
+                request.state.request_error = str(error_detail)[:500]
 
         if response.headers.get("content-type", "").startswith("text/event-stream"):
             # Streaming response: use async generator to keep connection alive
@@ -1023,6 +1034,8 @@ async def embeddings(request: Request) -> JSONResponse:
                 port=model_def.port,
                 error_detail=error_detail,
             )
+            if request is not None and is_request_error(error_detail):
+                request.state.request_error = str(error_detail)[:500]
 
         return JSONResponse(
             content=response.json(),
@@ -1170,6 +1183,8 @@ async def rerank(request: Request) -> JSONResponse:
                 port=model_def.port,
                 error_detail=error_detail,
             )
+            if request is not None and is_request_error(error_detail):
+                request.state.request_error = str(error_detail)[:500]
 
         return JSONResponse(
             content=response.json(),
@@ -1314,6 +1329,7 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
                     session_id=session_id,
                     carrier=dict(request.headers),
                     in_flight=in_flight,
+                    request=request,
                 )
 
             await probe.aclose()
@@ -1355,6 +1371,7 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
                 session_id=session_id,
                 carrier=dict(request.headers),
                 in_flight=in_flight,
+                request=request,
             )
 
         def _emit_responses_telemetry(response: httpx.Response, total_ms: float) -> None:
@@ -1408,6 +1425,8 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
                         port=model_def.port,
                         error_detail=error_detail,
                     )
+                    if request is not None and is_request_error(error_detail):
+                        request.state.request_error = str(error_detail)[:500]
 
                 if response.headers.get("content-type", "").startswith("text/event-stream"):
 
@@ -1468,6 +1487,8 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
                 port=model_def.port,
                 error_detail=error_detail,
             )
+            if request is not None and is_request_error(error_detail):
+                request.state.request_error = str(error_detail)[:500]
 
         if response.headers.get("content-type", "").startswith("text/event-stream"):
 
