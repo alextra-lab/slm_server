@@ -55,8 +55,10 @@ kill_pattern() {
         done
         sleep 1
         
-        # Force kill any remaining
-        pids=$(pgrep -f "$pattern" 2>/dev/null)
+        # Force kill any remaining. `|| true`: under `set -e` an empty pgrep (the
+        # normal case, everything already exited) otherwise aborts the whole
+        # script here, before the backend and llama-server sweeps below run.
+        pids=$(pgrep -f "$pattern" 2>/dev/null || true)
         if [ -n "$pids" ]; then
             echo -e "${RED}Force killing remaining $name processes...${NC}"
             echo "$pids" | while read pid; do
@@ -102,7 +104,7 @@ for role, model in (data.get('models') or {}).items():
     port = model.get('port')
     if port:
         print(f\"{port}|{role} ({model.get('id', role)})\")
-" 2>/dev/null)
+" 2>/dev/null || true)
 OLD_IFS=$IFS
 IFS='
 '
