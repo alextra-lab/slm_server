@@ -18,8 +18,8 @@ selected per entry in `config/models.yaml`. llama.cpp stays the default backend.
 ## Non-goals
 
 - Running `mtplx tune` from slm_server. The operator tunes separately and writes the result into config.
-- A generation-aware health probe. That work is tracked separately (FRE-1474) and applies to every
-  backend.
+- Generation-aware health. The mechanism is an owner decision spanning FRE-1474 (Seshat's health probe)
+  and slm_server's watchdog, and it applies to every backend.
 - Batched MTP for concurrent requests. MTPLX serves one request at a time by default; batching stays an
   opt-in field.
 - Changing FRE-1517. The study keeps the manual script until it ends.
@@ -166,7 +166,12 @@ llama.cpp spans are unchanged.
    - MTPLX's own stream-stall deadline (300 s by default, *source*) fails a stream whose model owner makes
      no progress. The router then sees a broken stream and `in_flight.failed()` records a backend failure.
      Stall detection for MTPLX therefore depends on that deadline staying enabled.
-   - Generation-aware health (FRE-1474) is the complete fix. Its priority rises with this backend.
+   - Closing the gap needs generation-aware health (the mechanism is an owner decision spanning FRE-1474
+     and slm_server's watchdog). FRE-1474 as written recommends a Seshat-side generation probe, which
+     detects a dead backend for monitoring but cannot restart one. Restarting a wedged backend that
+     still emits keep-alives needs wedge detection in slm_server's watchdog, for example a periodic short
+     completion per enabled backend that feeds `record_failure`. The urgency of that decision rises with
+     this backend.
 8. **Fan mode without the daemon.** `smart` and `max` need the privileged thermalforge daemon
    (`/tmp/thermalforge.sock`). Without it MTPLX logs a warning and serves normally (*source*). Validation
    warns when `mtplx_fan_mode` is `smart` or `max` and the socket is missing.
