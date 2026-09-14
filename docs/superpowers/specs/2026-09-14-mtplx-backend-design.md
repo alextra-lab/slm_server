@@ -156,9 +156,17 @@ llama.cpp spans are unchanged.
    reaches the watchdog after the 90 s startup grace, with its limit of 5 restarts in 10 minutes.
 6. **Host.** The builder always binds `127.0.0.1` with `--no-auth`. A `host` value other than `0.0.0.0` or
    `127.0.0.1` produces a warning, because MTPLX would require an API key.
-7. **Stalls.** The router's 300 s no-bytes rule works unchanged on streams because of the keep-alive
-   comments. MTPLX's own 300 s stream-stall deadline stays at its default. The launcher never sets
-   `MTPLX_SSE_HEARTBEAT=0`.
+7. **Stalls.** The router's 300 s first-byte stall rule does not detect a wedged MTPLX. In the streaming
+   loop, `in_flight.first_byte()` fires on every backend chunk except the router's own heartbeat
+   sentinel, and MTPLX's `: keep-alive` comments are backend chunks. A wedged MTPLX that keeps emitting
+   keep-alives is therefore never flagged as a stall. llama.cpp's 30 s SSE ping has the same effect, so
+   this gap is not MTPLX-specific.
+   - The keep-alives still matter: without them the rule would kill MTPLX during a long cold prefill.
+     The launcher never sets `MTPLX_SSE_HEARTBEAT=0`.
+   - MTPLX's own stream-stall deadline (300 s by default, *source*) fails a stream whose model owner makes
+     no progress. The router then sees a broken stream and `in_flight.failed()` records a backend failure.
+     Stall detection for MTPLX therefore depends on that deadline staying enabled.
+   - Generation-aware health (FRE-1474) is the complete fix. Its priority rises with this backend.
 8. **Fan mode without the daemon.** `smart` and `max` need the privileged thermalforge daemon
    (`/tmp/thermalforge.sock`). Without it MTPLX logs a warning and serves normally (*source*). Validation
    warns when `mtplx_fan_mode` is `smart` or `max` and the socket is missing.
