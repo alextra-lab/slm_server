@@ -15,7 +15,13 @@ from typing import Literal, cast
 import structlog
 from structlog import get_logger
 
-from slm_server.config import ModelConfig, ModelDefinition, load_model_config, mtplx_config_errors
+from slm_server.config import (
+    ModelConfig,
+    ModelDefinition,
+    check_memory_budget,
+    load_model_config,
+    mtplx_config_errors,
+)
 from slm_server.watchdog import BackendSupervisor
 from slm_server.watchdog import load_settings as load_watchdog_settings
 
@@ -1189,6 +1195,15 @@ def main() -> None:
         config = load_model_config()
     except Exception as e:
         log.error("failed_to_load_config", error=str(e))
+        sys.exit(1)
+
+    # Refuse before anything loads: two heavy engines in one Mac corrupt each other's decode
+    # speed, and a start that swaps under pressure is worse than a clear refusal.
+    budget = check_memory_budget(config)
+    for warning in budget.warnings:
+        log.warning("memory_budget_warning", detail=warning)
+    if budget.errors:
+        log.error("memory_budget_exceeded", errors=budget.errors)
         sys.exit(1)
 
     # Watchdog: nothing here used to restart a backend under any circumstance

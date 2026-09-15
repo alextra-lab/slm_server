@@ -1,6 +1,8 @@
 """Configuration management for SLM Server."""
 
 import json
+import os
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
@@ -288,9 +290,9 @@ def mtplx_config_errors(model_def: ModelDefinition) -> list[str]:
 def mtplx_config_warnings(model_def: ModelDefinition) -> list[str]:
     """Warnings for a backend: mtplx entry. The server still starts."""
     warnings: list[str] = []
-    for field in _LLAMACPP_ONLY_FIELDS:
-        if getattr(model_def, field) is not None:
-            warnings.append(f"backend mtplx ignores {field}; remove for clarity")
+    for field_name in _LLAMACPP_ONLY_FIELDS:
+        if getattr(model_def, field_name) is not None:
+            warnings.append(f"backend mtplx ignores {field_name}; remove for clarity")
     if model_def.max_concurrency > 1 and model_def.mtplx_batching_preset in (
         None,
         "solo",
@@ -311,6 +313,66 @@ def mtplx_config_warnings(model_def: ModelDefinition) -> list[str]:
             f"{THERMALFORGE_SOCKET} is missing; fans stay on Apple automatic control"
         )
     return warnings
+
+
+DEFAULT_MEMORY_BUDGET_GIB = 100.0
+HEAVY_MODEL_TYPES = ("lm", "multimodal")
+
+
+@dataclass
+class MemoryBudgetResult:
+    """Outcome of the launcher's memory check. Any error blocks startup."""
+
+    errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+
+def check_memory_budget(config: ModelConfig, budget_gib: float | None = None) -> MemoryBudgetResult:
+    """Refuse configs that would load more model memory than the Mac can hold.
+
+    One heavy engine at a time is the intended mode: memory pressure and heat change decode
+    speed, and callers share one concurrency pool across every local model.
+
+    Args:
+        config: Loaded model configuration.
+        budget_gib: Budget in GiB. None reads SLM_MEMORY_BUDGET_GIB, default 100.
+
+    Returns:
+        Errors (startup must stop) and warnings (startup continues).
+    """
+    result = MemoryBudgetResult()
+    if budget_gib is None:
+        raw = os.environ.get("SLM_MEMORY_BUDGET_GIB")
+        budget_gib = DEFAULT_MEMORY_BUDGET_GIB
+        if raw is not None:
+            try:
+                budget_gib = float(raw)
+            except ValueError:
+                result.warnings.append(
+                    f"SLM_MEMORY_BUDGET_GIB={raw!r} is not a number; using "
+                    f"{DEFAULT_MEMORY_BUDGET_GIB}"
+                )
+    enabled = [(role, m) for role, m in config.models.items() if m.enabled]
+    heavy = [(role, m) for role, m in enabled if m.model_type in HEAVY_MODEL_TYPES]
+    missing = [role for role, m in heavy if m.peak_memory_gib is None]
+    if len(heavy) >= 2 and missing:
+        result.errors.append(
+            f"{len(heavy)} heavy entries are enabled and these lack peak_memory_gib: "
+            f"{', '.join(missing)}; declare it on every heavy entry or enable only one"
+        )
+    elif missing:
+        result.warnings.append(
+            f"{missing[0]} has no peak_memory_gib; the memory budget cannot check it"
+        )
+    declared = [(role, m.peak_memory_gib) for role, m in enabled if m.peak_memory_gib is not None]
+    total = sum(peak for _role, peak in declared)
+    if total > budget_gib:
+        detail = ", ".join(f"{role}={peak}" for role, peak in declared)
+        result.errors.append(
+            f"declared peak memory {total:.1f} GiB exceeds the budget {budget_gib:.1f} GiB "
+            f"({detail})"
+        )
+    return result
 
 
 def _non_lm_model_config_warnings(role: str, model_def: ModelDefinition) -> list[str]:
@@ -356,10 +418,10 @@ def validate_model_config(config: ModelConfig) -> list[str]:
             issues.extend(f"{role}: {e}" for e in mtplx_config_errors(model_def))
             issues.extend(f"{role}: {w}" for w in mtplx_config_warnings(model_def))
         else:
-            for field in _MTPLX_ONLY_FIELDS:
-                if getattr(model_def, field) is not None:
+            for field_name in _MTPLX_ONLY_FIELDS:
+                if getattr(model_def, field_name) is not None:
                     issues.append(
-                        f"{role}: {field} only applies to backend mtplx; ignored for "
+                        f"{role}: {field_name} only applies to backend mtplx; ignored for "
                         f"{model_def.backend}"
                     )
 
