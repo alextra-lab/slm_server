@@ -145,6 +145,11 @@ def classify_status(status: int) -> tuple[StatusVerdict, FailureKind | None]:
         return "failure", "unreachable"
     if status == 504:
         return "failure", "timeout"
+    if status == 507:
+        # MTPLX's memory governor refuses a request that cannot fit. Restarting cannot make
+        # it fit, and counting it as health would let a backend refusing everything under
+        # memory pressure look healthy.
+        return "ignore", None
     if status >= 500:
         return "failure", "server_error"
     return "ignore", None

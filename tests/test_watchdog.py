@@ -714,3 +714,19 @@ def test_other_errors_are_not_request_errors(detail: object) -> None:
 def test_a_marker_outside_a_500_is_not_a_request_error(status: int) -> None:
     """A backend-wide failure must still count even if its body contains a marker."""
     assert wd.is_request_error("Failed to parse input at pos 42", status) is False
+
+
+def test_507_is_ignored() -> None:
+    """MTPLX refuses a request that does not fit in memory with 507.
+
+    Not a failure (restarting cannot make the request fit) and not health (a backend
+    refusing everything under memory pressure must not reset the failure streak).
+    """
+    assert wd.classify_status(507) == ("ignore", None)
+
+
+def test_507_does_not_erase_a_failure_streak() -> None:
+    tracker = wd.BackendHealthTracker(failure_threshold=2)
+    assert tracker.record_failure(8502, "timeout") is False
+    assert wd.classify_status(507)[0] == "ignore"
+    assert tracker.record_failure(8502, "timeout") is True
