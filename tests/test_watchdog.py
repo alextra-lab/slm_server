@@ -725,8 +725,25 @@ def test_507_is_ignored() -> None:
     assert wd.classify_status(507) == ("ignore", None)
 
 
-def test_507_does_not_erase_a_failure_streak() -> None:
-    tracker = wd.BackendHealthTracker(failure_threshold=2)
-    assert tracker.record_failure(8502, "timeout") is False
-    assert wd.classify_status(507)[0] == "ignore"
-    assert tracker.record_failure(8502, "timeout") is True
+def test_507_does_not_erase_a_failure_streak(settings: wd.WatchdogSettings) -> None:
+    """A 507 between two failures does not reset the streak.
+
+    The router calls record_unclassified for an "ignore" verdict, which must not
+    reset the consecutive-failure counter like record_success would.
+    """
+    watchdog = wd.RouterWatchdog(settings, model_ids={8502: "test-model"})
+
+    # First failure does not trip
+    watchdog.record_failure(8502, "timeout", "backend did not answer")
+    assert wd.read_restart_requests(settings.request_dir) == []
+
+    # 507 is treated as unclassified and does not reset the streak
+    assert wd.classify_status(507) == ("ignore", None)
+    watchdog.record_unclassified(8502, 507)
+    assert wd.read_restart_requests(settings.request_dir) == []
+
+    # Second failure trips the restart because the streak was not reset
+    watchdog.record_failure(8502, "timeout", "backend did not answer")
+    pending = wd.read_restart_requests(settings.request_dir)
+    assert len(pending) == 1
+    assert pending[0].port == 8502
