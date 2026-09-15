@@ -557,6 +557,8 @@ def _build_request_telemetry(
     against `prefill_ms` approximates how long a request waited for a backend slot,
     which `total_ms` alone cannot distinguish from slow compute.
     """
+    prompt_details = (usage or {}).get("prompt_tokens_details") or {}
+    completion_details = (usage or {}).get("completion_tokens_details") or {}
     return {
         "trace_id": trace_id,
         "span_id": span_id,
@@ -570,7 +572,9 @@ def _build_request_telemetry(
         "decode_ms": timings.get("predicted_ms") if timings else None,
         "prompt_n": timings.get("prompt_n") if timings else None,
         "predicted_n": timings.get("predicted_n") if timings else None,
-        "cache_reuse": timings.get("cache_n") if timings else None,
+        # llama.cpp reports cache hits in timings; MTPLX only in usage.prompt_tokens_details.
+        "cache_reuse": (timings.get("cache_n") if timings else prompt_details.get("cached_tokens")),
+        "reasoning_tokens": completion_details.get("reasoning_tokens"),
         "total_ms": round(total_ms, 1),
         "ttfb_ms": round(ttfb_ms, 1) if ttfb_ms is not None else None,
         "heartbeat_count": heartbeat_count,

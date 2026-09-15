@@ -87,6 +87,7 @@ _ATTRIBUTE_SOURCES: Final[tuple[tuple[str, str], ...]] = (
     ("slm.prompt_n", "prompt_n"),
     ("slm.predicted_n", "predicted_n"),
     ("slm.cache_reuse", "cache_reuse"),
+    ("slm.reasoning_tokens", "reasoning_tokens"),
     ("slm.ttfb_ms", "ttfb_ms"),
     ("slm.heartbeat_count", "heartbeat_count"),
     ("slm.client_disconnected", "client_disconnected"),
