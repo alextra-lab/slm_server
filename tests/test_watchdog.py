@@ -700,11 +700,17 @@ def test_a_disabled_watchdog_records_and_restarts_nothing(
     ],
 )
 def test_request_errors_are_recognised(detail: object) -> None:
-    assert wd.is_request_error(detail) is True
+    assert wd.is_request_error(detail, 500) is True
 
 
 @pytest.mark.parametrize(
     "detail", [{"error": {"code": 500, "message": "decode failed"}}, "Internal Server Error", None]
 )
 def test_other_errors_are_not_request_errors(detail: object) -> None:
-    assert wd.is_request_error(detail) is False
+    assert wd.is_request_error(detail, 500) is False
+
+
+@pytest.mark.parametrize("status", [502, 503, 504, 429, 400])
+def test_a_marker_outside_a_500_is_not_a_request_error(status: int) -> None:
+    """A backend-wide failure must still count even if its body contains a marker."""
+    assert wd.is_request_error("Failed to parse input at pos 42", status) is False

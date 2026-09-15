@@ -68,3 +68,10 @@ them with that caveat.
 
 Both models need `SLM_LLAMA_SERVER_BIN` pointing at the pinned build, and
 flash-next needs `spec_model_path` for its sidecar MTP head.
+
+The harnesses read their local paths from the environment:
+
+- `BENCH_OUT_DIR` — where the JSONL results go (default: the current directory).
+  `concurrency.py` writes to `stats/` in this folder instead.
+- `SLM_MODELS_DIR` — the models root that `mtp_matrix.py` joins to the paths in `MODELS`.
+- `SLM_LLAMA_SERVER_BIN` — the `llama-server` binary that `mtp_matrix.py` launches.

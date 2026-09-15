@@ -1,7 +1,7 @@
-import json, time, urllib.request, sys
+import json, os, time, urllib.request, sys
 
 ROUTER = "http://127.0.0.1:8000/v1/chat/completions"
-SCRATCH = "/private/tmp/claude-501/-Users-Alex-Dev-slm-server/9b8aaa05-c340-4d30-b0e2-8d8bbaa07db4/scratchpad"
+SCRATCH = os.environ.get("BENCH_OUT_DIR", ".")
 
 TARGETS = {
     "reasoning": ("unsloth/qwen3.6-35-A3B", 8502),

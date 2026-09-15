@@ -25,6 +25,8 @@ def isolate_watchdog_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     """Keep watchdog restart requests and logs out of the live repo."""
     monkeypatch.setenv("SLM_WATCHDOG_REQUEST_DIR", str(tmp_path / "watchdog-requests"))
     monkeypatch.setenv("SLM_WATCHDOG_LOG_PATH", str(tmp_path / "watchdog.jsonl"))
+    # The supervisor truncates oversized backend logs; never the live ones.
+    monkeypatch.setenv("SLM_BACKEND_LOG_DIR", str(tmp_path / "backend-logs"))
 
 
 @pytest.fixture(autouse=True)

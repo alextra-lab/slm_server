@@ -1,8 +1,8 @@
-import json, time, urllib.request, sys
+import json, os, time, urllib.request, sys
 
 URL = "http://127.0.0.1:8042/v1/chat/completions"
 MODEL = "mtplx-qwen38-27b-optimized-quality"
-OUT = "/private/tmp/claude-501/-Users-Alex-Dev-slm-server/9b8aaa05-c340-4d30-b0e2-8d8bbaa07db4/scratchpad/edges38.jsonl"
+OUT = os.path.join(os.environ.get("BENCH_OUT_DIR", "."), "edges38.jsonl")
 
 def call(tag, prompt, max_tokens, **extra):
     body = {"model": MODEL, "messages": [{"role": "user", "content": prompt}],

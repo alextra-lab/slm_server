@@ -10,7 +10,8 @@ from pathlib import Path
 
 import pytest
 
-from slm_server.config import ModelDefinition
+from slm_server import start_backends
+from slm_server.config import ModelConfig, ModelDefinition
 from slm_server.start_backends import build_llama_native_command, find_native_llama_server
 
 
@@ -53,8 +54,39 @@ def test_missing_spec_model_path_raises(tmp_path: Path) -> None:
     """A typo in the sidecar path must fail loudly, not start a server without MTP."""
     gguf = tmp_path / "model.gguf"
     gguf.write_bytes(b"")
-    with pytest.raises(FileNotFoundError, match="spec_model_path"):
+    with pytest.raises(ValueError, match="spec_model_path"):
         _native(gguf, spec_model_path=tmp_path / "absent.gguf", spec_type="draft-mtp")
+
+
+def test_start_model_server_returns_none_for_a_missing_draft(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The launcher and the supervisor both call start_model_server outside a try.
+
+    A missing draft path must come back as None (a failed start the supervisor
+    retries under its bound), never as an exception that ends the launcher.
+    """
+    gguf = tmp_path / "model.gguf"
+    gguf.write_bytes(b"")
+    md = ModelDefinition(
+        id="test/flash",
+        backend="llamacpp",
+        port=8502,
+        quantization="UD-IQ4_XS",
+        default_timeout=600,
+        model_path=str(gguf),
+        spec_model_path=str(tmp_path / "absent.gguf"),
+        spec_type="draft-mtp",
+    )
+    launched: list[list[str]] = []
+    monkeypatch.setenv("SLM_LLAMA_SERVER_BIN", "/usr/bin/true")
+    monkeypatch.setattr(start_backends, "LOG_DIR", tmp_path / "logs")
+    monkeypatch.setattr(
+        start_backends.subprocess, "Popen", lambda cmd, **_kwargs: launched.append(cmd)
+    )
+
+    assert start_backends.start_model_server(md, ModelConfig(models={"reasoning": md})) is None
+    assert launched == []
 
 
 def test_model_definition_accepts_spec_model_path(tmp_path: Path) -> None:

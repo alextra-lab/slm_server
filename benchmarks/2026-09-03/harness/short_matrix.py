@@ -1,5 +1,5 @@
-import json, sys
-sys.path.insert(0, "/private/tmp/claude-501/-Users-Alex-Dev-slm-server/9b8aaa05-c340-4d30-b0e2-8d8bbaa07db4/scratchpad")
+import json, os, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mtp_matrix as MM
 
 PROMPTS = {
@@ -8,7 +8,7 @@ PROMPTS = {
  "hard": "A train leaves A at 60 km/h. Two hours later a second train leaves A at 90 km/h on the same track. How far from A do they meet? Show the algebra.",
  "essay": MM.MED,
 }
-OUT = "/private/tmp/claude-501/-Users-Alex-Dev-slm-server/9b8aaa05-c340-4d30-b0e2-8d8bbaa07db4/scratchpad/short_matrix.jsonl"
+OUT = os.path.join(os.environ.get("BENCH_OUT_DIR", "."), "short_matrix.jsonl")
 
 def rec(r):
     with open(OUT, "a") as f: f.write(json.dumps(r)+"\n")
