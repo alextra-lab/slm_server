@@ -671,11 +671,11 @@ class RouterWatchdog:
 # --------------------------------------------------------------------------
 
 # Names the launcher gives backend stderr logs: `<prefix>-<id>-<port>.log`, with
-# prefix `llama` or the backend name (`mlx`, `mlx-rerank`). The launcher opens
+# prefix `llama` or the backend name (`mlx`, `mlx-rerank`, `mtplx`). The launcher opens
 # them in append mode, so truncating one is safe while its backend runs: the
 # next write lands at the new end of file. Other files in `logs/` (start.out,
 # watchdog.jsonl) are written differently and are never matched.
-BACKEND_LOG_NAME = re.compile(r"^(llama|mlx)-.+-\d+\.log$")
+BACKEND_LOG_NAME = re.compile(r"^(llama|mlx|mtplx)-.+-\d+\.log$")
 
 
 def trim_backend_logs(log_dir: Path, max_bytes: int) -> list[Path]:

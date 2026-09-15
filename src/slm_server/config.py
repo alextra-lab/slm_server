@@ -42,7 +42,7 @@ class ModelDefinition(BaseModel):
     )
     reasoning_parser: str | None = Field(
         None,
-        description="Reasoning parser for mlx-openai-server. Available options: qwen3, glm4_moe, qwen3_moe, qwen3_next, qwen3_vl, harmony, minimax_m2. Only works with language models (lm or multimodal model types).",
+        description="Reasoning parser. For mlx-openai-server: qwen3, glm4_moe, qwen3_moe, qwen3_next, qwen3_vl, harmony, minimax_m2 (language models only). For mtplx (--reasoning-parser): qwen3, step3p5, gemma4, poolside_v1, none.",
     )
     config_name: str | None = Field(
         None,
@@ -55,7 +55,7 @@ class ModelDefinition(BaseModel):
     # See https://unsloth.ai/docs/models/qwen3.5#how-to-enable-or-disable-reasoning-and-thinking
     chat_template_kwargs: dict | None = Field(
         None,
-        description="Optional chat template kwargs for llama.cpp (e.g. enable_thinking for Qwen3.5). Only used when backend is llamacpp.",
+        description="Optional chat template kwargs (e.g. enable_thinking for Qwen3.5). Used when backend is llamacpp or mtplx (the router merges config and request chat_template_kwargs for mtplx entries).",
     )
     chat_template_file: str | None = Field(
         None,
@@ -63,19 +63,27 @@ class ModelDefinition(BaseModel):
     )
     # Optional llamacpp-only CLI options; only applied when present (no defaults in code).
     temp: float | None = Field(
-        None, description="Sampling temperature (llamacpp). Only used when backend is llamacpp."
+        None,
+        description="Sampling temperature. Used when backend is llamacpp or mtplx (passed as "
+        "--default-temperature for mtplx).",
     )
     top_p: float | None = Field(
-        None, description="Top-p sampling (llamacpp). Only used when backend is llamacpp."
+        None,
+        description="Top-p sampling. Used when backend is llamacpp or mtplx (passed as "
+        "--default-top-p for mtplx).",
     )
     top_k: int | None = Field(
-        None, description="Top-k sampling (llamacpp). Only used when backend is llamacpp."
+        None,
+        description="Top-k sampling. Used when backend is llamacpp or mtplx (passed as "
+        "--default-top-k for mtplx).",
     )
     min_p: float | None = Field(
         None, description="Min-p sampling (llamacpp). Only used when backend is llamacpp."
     )
     presence_penalty: float | None = Field(
-        None, description="Presence penalty (llamacpp). Only used when backend is llamacpp."
+        None,
+        description="Presence penalty. Used when backend is llamacpp or mtplx (passed as "
+        "--default-presence-penalty for mtplx).",
     )
     repetition_penalty: float | None = Field(
         None,
