@@ -714,3 +714,36 @@ def test_other_errors_are_not_request_errors(detail: object) -> None:
 def test_a_marker_outside_a_500_is_not_a_request_error(status: int) -> None:
     """A backend-wide failure must still count even if its body contains a marker."""
     assert wd.is_request_error("Failed to parse input at pos 42", status) is False
+
+
+def test_507_is_ignored() -> None:
+    """MTPLX refuses a request that does not fit in memory with 507.
+
+    Not a failure (restarting cannot make the request fit) and not health (a backend
+    refusing everything under memory pressure must not reset the failure streak).
+    """
+    assert wd.classify_status(507) == ("ignore", None)
+
+
+def test_507_does_not_erase_a_failure_streak(settings: wd.WatchdogSettings) -> None:
+    """A 507 between two failures does not reset the streak.
+
+    The router calls record_unclassified for an "ignore" verdict, which must not
+    reset the consecutive-failure counter like record_success would.
+    """
+    watchdog = wd.RouterWatchdog(settings, model_ids={8502: "test-model"})
+
+    # First failure does not trip
+    watchdog.record_failure(8502, "timeout", "backend did not answer")
+    assert wd.read_restart_requests(settings.request_dir) == []
+
+    # 507 is treated as unclassified and does not reset the streak
+    assert wd.classify_status(507) == ("ignore", None)
+    watchdog.record_unclassified(8502, 507)
+    assert wd.read_restart_requests(settings.request_dir) == []
+
+    # Second failure trips the restart because the streak was not reset
+    watchdog.record_failure(8502, "timeout", "backend did not answer")
+    pending = wd.read_restart_requests(settings.request_dir)
+    assert len(pending) == 1
+    assert pending[0].port == 8502

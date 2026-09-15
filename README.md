@@ -60,7 +60,7 @@ Copy `config/models.yaml.example` to `config/models.yaml` and set your model pat
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
 | `id` | yes | — | Model identifier used for routing (must match `model` field in requests) |
-| `backend` | yes | — | `mlx`, `llamacpp`, or `mlx-rerank` (in-repo MLX reranker server) |
+| `backend` | yes | — | `mlx`, `llamacpp`, `mlx-rerank` (in-repo MLX reranker server), or `mtplx` (managed `mtplx serve`; see [MTPLX backend](#mtplx-backend)) |
 | `port` | yes | — | Port for this model's backend server (must be unique) |
 | `model_path` | yes | — | Local path to model file/directory, or Hugging Face model ID (MLX only for HF IDs) |
 | `default_timeout` | yes | — | Request timeout in seconds |
@@ -78,20 +78,20 @@ Copy `config/models.yaml.example` to `config/models.yaml` and set your model pat
 |-------|---------|-------------|
 | `enable_auto_tool_choice` | `false` | Pass `--enable-auto-tool-choice` to mlx-openai-server |
 | `tool_call_parser` | `null` | Parser for tool calls. See current `mlx-openai-server --help` for the full parser list supported by your installed version |
-| `reasoning_parser` | `null` | Parser for reasoning/thinking tokens. Set to `null` (or omit) to disable thinking mode |
+| `reasoning_parser` | `null` | Parser for reasoning/thinking tokens. Set to `null` (or omit) to disable thinking mode. Also used by `mtplx` (`--reasoning-parser`; allowed values there: `qwen3`, `step3p5`, `gemma4`, `poolside_v1`, `none` — see [MTPLX backend](#mtplx-backend)) |
 | `config_name` | `flux-schnell` / `flux-kontext-dev` | Config name for `image-generation` or `image-edit` model types |
 
 **llama.cpp-only fields** (passed to `llama-server` or `llama_cpp.server`):
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `chat_template_kwargs` | `null` | Dict passed as `--chat-template-kwargs` (e.g. `{enable_thinking: true}` for Qwen3.5) |
+| `chat_template_kwargs` | `null` | Dict passed as `--chat-template-kwargs` (e.g. `{enable_thinking: true}` for Qwen3.5). Also used by `mtplx` — the router merges config and request `chat_template_kwargs` for `mtplx` entries |
 | `chat_template_file` | `null` | Path to a Jinja template file passed as `--jinja --chat-template-file` (overrides the GGUF-embedded template; resolved relative to repo root if not absolute) — native `llama-server` only |
-| `temp` | — | Sampling temperature |
-| `top_p` | — | Top-p sampling |
-| `top_k` | — | Top-k sampling |
+| `temp` | — | Sampling temperature. Also used by `mtplx` (`--default-temperature`) |
+| `top_p` | — | Top-p sampling. Also used by `mtplx` (`--default-top-p`) |
+| `top_k` | — | Top-k sampling. Also used by `mtplx` (`--default-top-k`) |
 | `min_p` | — | Min-p sampling |
-| `presence_penalty` | — | Presence penalty (discourages already-seen tokens) |
+| `presence_penalty` | — | Presence penalty (discourages already-seen tokens). Also used by `mtplx` (`--default-presence-penalty`) |
 | `repetition_penalty` | — | Repeat penalty multiplier (`1.0` = disabled) |
 | `n_predict` | — | Maximum tokens to generate per request |
 | `ubatch_size` | — | Physical micro-batch size for prompt processing (`--ubatch-size`; llama.cpp default `512`, capped at the logical batch of `2048`). `2048` ran long-context warm prefill ~13% faster on Qwen3.8-Flash-Next — native `llama-server` only |
@@ -107,8 +107,20 @@ Copy `config/models.yaml.example` to `config/models.yaml` and set your model pat
 | `spec_type` | — | Speculative decoding type (e.g. `draft-mtp`) — native `llama-server` only |
 | `spec_draft_n_max` | — | Max draft tokens for speculative decoding (e.g. `2`) — native `llama-server` only |
 | `spec_model_path` | — | Path to a sidecar draft-head GGUF (native `-md`) — needed when the MTP head ships beside the model rather than inside it, as for Qwen3.8-Flash-Next |
-| `verbose` | — | Enable verbose `llama-server` logging (`--verbose`) — native `llama-server` only. Every backend's stderr goes to `logs/<llama\|mlx\|mlx-rerank>-<id>-<port>.log` whether or not this is set; the previous run's log is kept as `.log.prev` |
+| `verbose` | — | Enable verbose `llama-server` logging (`--verbose`) — native `llama-server` only. Every backend's stderr goes to `logs/<llama\|mlx\|mlx-rerank\|mtplx>-<id>-<port>.log` whether or not this is set; the previous run's log is kept as `.log.prev` |
 | `mmproj_path` | `null` | Path to multimodal projector `.gguf` — required when `model_type: multimodal` |
+
+**MTPLX-only fields** (passed to `mtplx serve`; see [MTPLX backend](#mtplx-backend) for details):
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `mtp_depth` | — | Required. MTP draft depth (`--depth`), 1 to the pack's `mtp_depth_max` |
+| `reasoning_effort` | not passed | `low`, `medium`, `high`, `xhigh`, or `auto` (`--reasoning-effort`) |
+| `preserve_thinking` | `off` | `off`, `on`, `auto`, or `scoped` (`--preserve-thinking`) |
+| `mtplx_profile` | not passed | `stable`, `performance-cold`, `sustained`, `turbo`, `exact`, or `max-diagnostic` (`--profile`) |
+| `mtplx_batching_preset` | not passed (serial) | `solo`, `latency`, `agent`, or `throughput` (`--batching-preset`) |
+| `mtplx_fan_mode` | not passed | `default`, `smart`, or `max` (`--fan-mode`; `smart`/`max` need the thermalforge daemon) |
+| `peak_memory_gib` | — | Declared peak resident memory in GiB, for the launcher's memory budget. Applies to every backend, not just `mtplx` |
 
 ### Model Path
 
@@ -237,6 +249,44 @@ Router health check.
 - When native `llama-server` is not found, falls back to `python -m llama_cpp.server`
 - Requires local `.gguf` files — Hugging Face model IDs are not supported
 
+## MTPLX backend
+
+`backend: mtplx` runs a Youssofal MTPLX pack with `mtplx serve` (Apple Silicon, MLX, native MTP
+speculative decoding). llama.cpp stays the default backend.
+
+Requirements:
+
+- The `mtplx` CLI: `SLM_MTPLX_BIN`, `mtplx` on `PATH`, or `~/.mtplx/bin/mtplx`.
+- `model_path`: a local pack directory containing `config.json` and `mtplx_runtime.json`.
+- `mtp_depth`: required. `mtplx serve` ignores saved tuning, so tune first and copy the result:
+  `mtplx tune --model /path/to/pack --retune` (tune tests depths 1–3 only).
+
+MTPLX-only fields: `mtp_depth`, `reasoning_effort`, `preserve_thinking` (default `off`),
+`mtplx_profile`, `mtplx_batching_preset` (unset = serial, one request at a time),
+`mtplx_fan_mode` (`smart` and `max` need the thermalforge daemon at `/tmp/thermalforge.sock`).
+Set effort only as the top-level `reasoning_effort` field, never inside `chat_template_kwargs`.
+`preserve_thinking` must also stay out of an MTPLX entry's config `chat_template_kwargs` —
+validation rejects both.
+
+Behaviour to know:
+
+- The server binds `127.0.0.1` with `--no-auth`; the router is its only client.
+- The port opens after the model load and the foreground warm-up. An extended warm-up then runs in
+  the background and yields to requests. Timing-sensitive clients wait until `/health`
+  `warmup.background.state` leaves `running`. `SLM_BACKEND_READY_TIMEOUT` (default 180 s) sets how
+  long `start.sh` waits for ports.
+- Streaming requests get MTPLX keep-alive comments before the first token. Non-streaming requests
+  get no bytes until MTPLX finishes, so proxy read timeouts still apply.
+- MTPLX answers HTTP 507 when a request does not fit in memory. The watchdog ignores 507.
+- The router's first-byte stall rule cannot detect a wedged backend that still sends keep-alives
+  (MTPLX) or pings (llama.cpp). MTPLX's own 300 s stream-stall deadline is the partial guard.
+
+### Memory budget
+
+Run one heavy engine at a time. Declare `peak_memory_gib` on each `lm` or `multimodal` entry.
+The backend launcher refuses to start when two or more heavy entries are enabled and any lacks
+`peak_memory_gib`, or when the declared total exceeds `SLM_MEMORY_BUDGET_GIB` (default 100).
+
 ## Watchdog
 
 Backends that stop serving are restarted automatically (FRE-241). The hard case is
@@ -263,8 +313,8 @@ because some 4xx describe the *backend's condition* and some describe the
 | Verdict | Statuses | Effect |
 |---|---|---|
 | health | 2xx, 400, 404, 422 | resets the failure streak |
-| failure | 408, 425, 429, all 5xx | counts toward a restart |
-| ignore | everything else | neither — an unknown code is not evidence of health |
+| failure | 408, 425, 429, all 5xx except 507 | counts toward a restart |
+| ignore | 507, everything else | neither — an unknown code is not evidence of health; 507 means MTPLX refused a request that does not fit in memory, and restarting cannot help |
 
 A threshold got this wrong in a way that mattered. Scoring 429 or 408 as health
 did not merely fail to count them: recording health **resets** the consecutive

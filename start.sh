@@ -109,7 +109,16 @@ print(' '.join(ports))
         return 0
     fi
     
-    local max_attempts=30
+    # One check per second. MTPLX opens its port only after the model load and the
+    # foreground warm-up, so a cold start can take minutes; llama-server opens its port
+    # first and loads afterwards. A healthy start still finishes as soon as ports answer.
+    local max_attempts="${SLM_BACKEND_READY_TIMEOUT:-180}"
+    case "$max_attempts" in
+        ''|*[!0-9]*)
+            echo "⚠️  SLM_BACKEND_READY_TIMEOUT='$max_attempts' is not a whole number; using 180"
+            max_attempts=180
+            ;;
+    esac
     local attempt=0
     local failed_ports=()
     
