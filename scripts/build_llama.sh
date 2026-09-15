@@ -44,7 +44,7 @@ git checkout --detach "$PIN"
 # Key contents: #28330 (skip the unused indexer V cache on qwen4exp),
 # #28390 (single-device drafter skips the meta backend wrapper),
 # #28302 (context-checkpoint eviction only when the list is full).
-MASTER_PIN="${LLAMA_MASTER_PIN:-311d4211b}"
+MASTER_PIN="${LLAMA_MASTER_PIN:-311d4211bf1611ff7ca6b67035a4a07c79766efc}"
 if ! git cat-file -e "$MASTER_PIN^{commit}" 2>/dev/null; then
     echo "==> fetching master for $MASTER_PIN"
     git fetch origin master

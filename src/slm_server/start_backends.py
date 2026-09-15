@@ -618,7 +618,10 @@ def build_llama_native_command(
     if spec_model_path is not None:
         draft = Path(spec_model_path).expanduser()
         if not draft.is_file():
-            raise FileNotFoundError(f"spec_model_path does not exist: {draft}")
+            # ValueError, like every other config check here: start_model_server
+            # catches it and returns None, so one bad path cannot stop the launcher
+            # before the remaining backends start.
+            raise ValueError(f"spec_model_path does not exist: {draft}")
         cmd.extend(["-md", str(draft)])
     if spec_type is not None:
         cmd.extend(["--spec-type", spec_type])

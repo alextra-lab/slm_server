@@ -12,11 +12,12 @@ Method notes that matter for reading the numbers:
 """
 import json, statistics as st, time, urllib.request, urllib.error
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 URL = "http://127.0.0.1:8000/v1/chat/completions"
 MODEL = "unsloth/qwen3.8-flash-next"
 MAX_TOKENS = 300
-OUT = "/Users/Alex/Dev/slm_server/benchmarks/2026-09-03/stats/concurrency.jsonl"
+OUT = str(Path(__file__).resolve().parents[1] / "stats" / "concurrency.jsonl")
 
 FILLER = ("Background material follows. " * 30).strip()   # ~200 prompt tokens
 

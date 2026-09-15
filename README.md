@@ -387,7 +387,12 @@ All optional, via environment (`.env` is loaded by `start.sh`):
 `SLM_WATCHDOG_ENABLED` · `SLM_WATCHDOG_FAILURE_THRESHOLD` · `SLM_WATCHDOG_STALL_SECONDS` ·
 `SLM_WATCHDOG_SWEEP_SECONDS` · `SLM_WATCHDOG_MAX_RESTARTS` · `SLM_WATCHDOG_RESTART_WINDOW_SECONDS` ·
 `SLM_WATCHDOG_RESTART_COOLDOWN_SECONDS` · `SLM_WATCHDOG_STARTUP_GRACE_SECONDS` ·
-`SLM_WATCHDOG_REQUEST_DIR` · `SLM_WATCHDOG_LOG_PATH`
+`SLM_WATCHDOG_REQUEST_DIR` · `SLM_WATCHDOG_LOG_PATH` · `SLM_BACKEND_LOG_MAX_MB` · `SLM_BACKEND_LOG_DIR`
+
+On each sweep the supervisor checks the backend stderr logs in `logs/`. A log larger than
+`SLM_BACKEND_LOG_MAX_MB` (default 100) is copied to `.prev` and truncated, and the event goes to
+`logs/watchdog.jsonl`. Set it to `0` to disable trimming. A backend-error body counts as a
+request-level error (never a restart) only when the backend returned HTTP 500.
 
 Set `SLM_WATCHDOG_ENABLED=false` to fall back to the previous behaviour, where
 backends are started and never supervised.
@@ -481,7 +486,7 @@ newest architectures. Homebrew v0.3.0 (build 10621) cannot load Qwen3.8-Flash-Ne
 ```
 Then point the launcher at it in `.env`:
 ```
-SLM_LLAMA_SERVER_BIN=/Users/Alex/Dev/llama.cpp/build/bin/llama-server
+SLM_LLAMA_SERVER_BIN=/path/to/llama.cpp/build/bin/llama-server
 ```
 `SLM_LLAMA_SERVER_BIN` takes precedence; a `llama-server` on PATH is the fallback. The pinned commit lives in
 `config/llama.cpp.pin`.

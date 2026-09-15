@@ -703,7 +703,7 @@ async def _stream_backend_response(
             port=model_def.port,
             error_detail=error_detail,
         )
-        if request is not None and is_request_error(error_detail):
+        if request is not None and is_request_error(error_detail, response.status_code):
             request.state.request_error = str(error_detail)[:500]
         _emit_telemetry(None, None, response.status_code)
         return JSONResponse(
@@ -903,7 +903,7 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
                 port=model_def.port,
                 error_detail=error_detail,
             )
-            if request is not None and is_request_error(error_detail):
+            if request is not None and is_request_error(error_detail, response.status_code):
                 request.state.request_error = str(error_detail)[:500]
 
         if response.headers.get("content-type", "").startswith("text/event-stream"):
@@ -1034,7 +1034,7 @@ async def embeddings(request: Request) -> JSONResponse:
                 port=model_def.port,
                 error_detail=error_detail,
             )
-            if request is not None and is_request_error(error_detail):
+            if request is not None and is_request_error(error_detail, response.status_code):
                 request.state.request_error = str(error_detail)[:500]
 
         return JSONResponse(
@@ -1183,7 +1183,7 @@ async def rerank(request: Request) -> JSONResponse:
                 port=model_def.port,
                 error_detail=error_detail,
             )
-            if request is not None and is_request_error(error_detail):
+            if request is not None and is_request_error(error_detail, response.status_code):
                 request.state.request_error = str(error_detail)[:500]
 
         return JSONResponse(
@@ -1425,7 +1425,7 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
                         port=model_def.port,
                         error_detail=error_detail,
                     )
-                    if request is not None and is_request_error(error_detail):
+                    if request is not None and is_request_error(error_detail, response.status_code):
                         request.state.request_error = str(error_detail)[:500]
 
                 if response.headers.get("content-type", "").startswith("text/event-stream"):
@@ -1487,7 +1487,7 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
                 port=model_def.port,
                 error_detail=error_detail,
             )
-            if request is not None and is_request_error(error_detail):
+            if request is not None and is_request_error(error_detail, response.status_code):
                 request.state.request_error = str(error_detail)[:500]
 
         if response.headers.get("content-type", "").startswith("text/event-stream"):

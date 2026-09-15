@@ -1,11 +1,11 @@
 import json, os, signal, subprocess, time, urllib.request
 
-S = "/private/tmp/claude-501/-Users-Alex-Dev-slm-server/9b8aaa05-c340-4d30-b0e2-8d8bbaa07db4/scratchpad"
-BIN = f"{S}/llama.cpp/build/bin/llama-server"
-M = "/Volumes/EnvoyUltra/lm-studio/models"
+S = os.environ.get("BENCH_OUT_DIR", ".")
+BIN = os.environ.get("SLM_LLAMA_SERVER_BIN", "llama-server")
+M = os.environ.get("SLM_MODELS_DIR", "/path/to/models")
 PORT = 8597
 OUT = f"{S}/mtp_matrix.jsonl"
-REPO = "/Users/Alex/Dev/slm_server"
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 MODELS = {
   "qwen36": dict(
