@@ -123,9 +123,10 @@ For entries with `backend == "mtplx"` only, one helper runs in the three places 
 
 ### Telemetry
 
-For MTPLX entries, the request span takes `slm.cache_reuse` from `usage.prompt_tokens_details.cached_tokens`
-when llama.cpp `timings` are absent, and adds `usage.completion_tokens_details.reasoning_tokens`.
-llama.cpp spans are unchanged.
+For every backend, the request span takes `slm.cache_reuse` from `timings.cache_n` when llama.cpp
+`timings` are present, otherwise from `usage.prompt_tokens_details.cached_tokens` (MTPLX's case), and
+adds `usage.completion_tokens_details.reasoning_tokens`. llama.cpp spans are unchanged where timings
+exist.
 
 ## 3. Errors and startup
 
