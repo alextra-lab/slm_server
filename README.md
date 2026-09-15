@@ -237,6 +237,42 @@ Router health check.
 - When native `llama-server` is not found, falls back to `python -m llama_cpp.server`
 - Requires local `.gguf` files — Hugging Face model IDs are not supported
 
+## MTPLX backend
+
+`backend: mtplx` runs a Youssofal MTPLX pack with `mtplx serve` (Apple Silicon, MLX, native MTP
+speculative decoding). llama.cpp stays the default backend.
+
+Requirements:
+
+- The `mtplx` CLI: `SLM_MTPLX_BIN`, `mtplx` on `PATH`, or `~/.mtplx/bin/mtplx`.
+- `model_path`: a local pack directory containing `config.json` and `mtplx_runtime.json`.
+- `mtp_depth`: required. `mtplx serve` ignores saved tuning, so tune first and copy the result:
+  `mtplx tune --model /path/to/pack --retune` (tune tests depths 1–3 only).
+
+MTPLX-only fields: `mtp_depth`, `reasoning_effort`, `preserve_thinking` (default `off`),
+`mtplx_profile`, `mtplx_batching_preset` (unset = serial, one request at a time),
+`mtplx_fan_mode` (`smart` and `max` need the thermalforge daemon at `/tmp/thermalforge.sock`).
+Set effort only as the top-level `reasoning_effort` field, never inside `chat_template_kwargs`.
+
+Behaviour to know:
+
+- The server binds `127.0.0.1` with `--no-auth`; the router is its only client.
+- The port opens after the model load and the foreground warm-up. An extended warm-up then runs in
+  the background and yields to requests. Timing-sensitive clients wait until `/health`
+  `warmup.background.state` leaves `running`. `SLM_BACKEND_READY_TIMEOUT` (default 180 s) sets how
+  long `start.sh` waits for ports.
+- Streaming requests get MTPLX keep-alive comments before the first token. Non-streaming requests
+  get no bytes until MTPLX finishes, so proxy read timeouts still apply.
+- MTPLX answers HTTP 507 when a request does not fit in memory. The watchdog ignores 507.
+- The router's first-byte stall rule cannot detect a wedged backend that still sends keep-alives
+  (MTPLX) or pings (llama.cpp). MTPLX's own 300 s stream-stall deadline is the partial guard.
+
+### Memory budget
+
+Run one heavy engine at a time. Declare `peak_memory_gib` on each `lm` or `multimodal` entry.
+The backend launcher refuses to start when two or more heavy entries are enabled and any lacks
+`peak_memory_gib`, or when the declared total exceeds `SLM_MEMORY_BUDGET_GIB` (default 100).
+
 ## Watchdog
 
 Backends that stop serving are restarted automatically (FRE-241). The hard case is
