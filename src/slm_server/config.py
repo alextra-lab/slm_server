@@ -1,5 +1,6 @@
 """Configuration management for SLM Server."""
 
+import json
 from pathlib import Path
 from typing import Literal
 
@@ -10,7 +11,9 @@ class ModelDefinition(BaseModel):
     """Configuration for a single model server instance."""
 
     id: str = Field(..., description="Model identifier (used for routing)")
-    backend: Literal["mlx", "llamacpp", "mlx-rerank"] = Field(..., description="Backend type")
+    backend: Literal["mlx", "llamacpp", "mlx-rerank", "mtplx"] = Field(
+        ..., description="Backend type"
+    )
     port: int = Field(..., ge=1024, le=65535, description="Port number for this model server")
     context_length: int | None = Field(
         None,
@@ -146,6 +149,42 @@ class ModelDefinition(BaseModel):
             "Passed to llama-server as --mmproj."
         ),
     )
+    # MTPLX-only fields (backend: mtplx). See docs/superpowers/specs/2026-09-14-mtplx-backend-design.md.
+    mtp_depth: int | None = Field(
+        None,
+        ge=1,
+        le=6,
+        description="MTP draft depth passed to `mtplx serve --depth`. Required for backend mtplx: "
+        "`mtplx serve` ignores saved tuning. Tune with `mtplx tune` and copy the best depth here.",
+    )
+    reasoning_effort: Literal["low", "medium", "high", "xhigh", "auto"] | None = Field(
+        None, description="`mtplx serve --reasoning-effort`. Only used when backend is mtplx."
+    )
+    preserve_thinking: Literal["off", "on", "auto", "scoped"] | None = Field(
+        None,
+        description="`mtplx serve --preserve-thinking`. Defaults to off when unset. Only used when "
+        "backend is mtplx.",
+    )
+    mtplx_profile: (
+        Literal["stable", "performance-cold", "sustained", "turbo", "exact", "max-diagnostic"]
+        | None
+    ) = Field(None, description="`mtplx serve --profile`. Only used when backend is mtplx.")
+    mtplx_batching_preset: Literal["solo", "latency", "agent", "throughput"] | None = Field(
+        None,
+        description="`mtplx serve --batching-preset`. Unset means serial (one request at a time). "
+        "Only used when backend is mtplx.",
+    )
+    mtplx_fan_mode: Literal["default", "smart", "max"] | None = Field(
+        None,
+        description="`mtplx serve --fan-mode`. smart and max need the thermalforge daemon. Only "
+        "used when backend is mtplx.",
+    )
+    peak_memory_gib: float | None = Field(
+        None,
+        gt=0,
+        description="Declared peak resident memory in GiB, for the launcher's memory budget. "
+        "Applies to every backend.",
+    )
     enabled: bool = Field(True, description="Whether this model server should be started")
 
 
@@ -153,6 +192,125 @@ class ModelConfig(BaseModel):
     """Complete model configuration loaded from YAML."""
 
     models: dict[str, ModelDefinition]
+
+
+MTPLX_DEPTH_CEILING = 6
+THERMALFORGE_SOCKET = Path("/tmp/thermalforge.sock")
+
+_MTPLX_ONLY_FIELDS = (
+    "mtp_depth",
+    "reasoning_effort",
+    "preserve_thinking",
+    "mtplx_profile",
+    "mtplx_batching_preset",
+    "mtplx_fan_mode",
+)
+
+_LLAMACPP_ONLY_FIELDS = (
+    "min_p",
+    "repetition_penalty",
+    "n_predict",
+    "ubatch_size",
+    "kv_unified",
+    "cache_type_k",
+    "cache_type_v",
+    "cache_ram",
+    "kv_offload",
+    "flash_attn",
+    "fit",
+    "cont_batching",
+    "cache_prompt",
+    "spec_type",
+    "spec_draft_n_max",
+    "spec_model_path",
+    "verbose",
+    "chat_template_file",
+    "mmproj_path",
+)
+
+_MTPLX_CONFIG_KWARG_KEYS_FORBIDDEN = ("reasoning_effort", "preserve_thinking")
+
+
+def read_mtp_depth_max(pack_dir: Path) -> int:
+    """Read the pack's declared maximum MTP depth.
+
+    Args:
+        pack_dir: MTPLX pack directory.
+
+    Returns:
+        `mtp_depth_max` from `mtplx_runtime.json`, or `MTPLX_DEPTH_CEILING` when the file or
+        the key is missing or invalid.
+    """
+    try:
+        data = json.loads((pack_dir / "mtplx_runtime.json").read_text())
+    except (OSError, ValueError):
+        return MTPLX_DEPTH_CEILING
+    value = data.get("mtp_depth_max") if isinstance(data, dict) else None
+    if isinstance(value, int) and 1 <= value <= MTPLX_DEPTH_CEILING:
+        return value
+    return MTPLX_DEPTH_CEILING
+
+
+def mtplx_config_errors(model_def: ModelDefinition) -> list[str]:
+    """Hard errors for a backend: mtplx entry. The builder refuses to start on any of these."""
+    errors: list[str] = []
+    path_str = model_def.model_path or ""
+    if not path_str or not path_str.startswith("/"):
+        errors.append(
+            "backend mtplx requires model_path to be a local directory (absolute path), "
+            f"got: {path_str!r}"
+        )
+    else:
+        pack = Path(path_str)
+        if not pack.is_dir():
+            errors.append(f"backend mtplx model_path is not a directory: {pack}")
+        else:
+            for required in ("config.json", "mtplx_runtime.json"):
+                if not (pack / required).is_file():
+                    errors.append(f"backend mtplx pack is missing {required}: {pack}")
+            if model_def.mtp_depth is not None:
+                depth_max = read_mtp_depth_max(pack)
+                if model_def.mtp_depth > depth_max:
+                    errors.append(
+                        f"mtp_depth {model_def.mtp_depth} exceeds the pack's mtp_depth_max "
+                        f"{depth_max}"
+                    )
+    if model_def.mtp_depth is None:
+        errors.append("backend mtplx requires mtp_depth (mtplx serve ignores saved tuning)")
+    for key in _MTPLX_CONFIG_KWARG_KEYS_FORBIDDEN:
+        if model_def.chat_template_kwargs and key in model_def.chat_template_kwargs:
+            errors.append(
+                f"backend mtplx: set {key} as a top-level field, not inside chat_template_kwargs"
+            )
+    return errors
+
+
+def mtplx_config_warnings(model_def: ModelDefinition) -> list[str]:
+    """Warnings for a backend: mtplx entry. The server still starts."""
+    warnings: list[str] = []
+    for field in _LLAMACPP_ONLY_FIELDS:
+        if getattr(model_def, field) is not None:
+            warnings.append(f"backend mtplx ignores {field}; remove for clarity")
+    if model_def.max_concurrency > 1 and model_def.mtplx_batching_preset in (
+        None,
+        "solo",
+        "latency",
+    ):
+        warnings.append(
+            f"max_concurrency {model_def.max_concurrency} with a serial MTPLX scheduler: "
+            "requests queue one at a time; set mtplx_batching_preset to agent or throughput"
+        )
+    if model_def.host not in ("0.0.0.0", "127.0.0.1"):
+        warnings.append(
+            f"host {model_def.host} is ignored: mtplx binds 127.0.0.1 (non-localhost binds need "
+            "an API key)"
+        )
+    if model_def.mtplx_fan_mode in ("smart", "max") and not THERMALFORGE_SOCKET.exists():
+        warnings.append(
+            f"mtplx_fan_mode {model_def.mtplx_fan_mode} set but the thermalforge daemon socket "
+            f"{THERMALFORGE_SOCKET} is missing; fans stay on Apple automatic control"
+        )
+    return warnings
 
 
 def _non_lm_model_config_warnings(role: str, model_def: ModelDefinition) -> list[str]:
@@ -191,9 +349,20 @@ def validate_model_config(config: ModelConfig) -> list[str]:
     Returns:
         List of validation issues (warnings and errors). Empty list means valid.
     """
-    issues = []
+    issues: list[str] = []
 
     for role, model_def in config.models.items():
+        if model_def.backend == "mtplx":
+            issues.extend(f"{role}: {e}" for e in mtplx_config_errors(model_def))
+            issues.extend(f"{role}: {w}" for w in mtplx_config_warnings(model_def))
+        else:
+            for field in _MTPLX_ONLY_FIELDS:
+                if getattr(model_def, field) is not None:
+                    issues.append(
+                        f"{role}: {field} only applies to backend mtplx; ignored for "
+                        f"{model_def.backend}"
+                    )
+
         if model_def.model_type == "rerank" and model_def.backend not in ("llamacpp", "mlx-rerank"):
             issues.append(
                 f"{role}: model_type rerank is only supported with backend llamacpp "
