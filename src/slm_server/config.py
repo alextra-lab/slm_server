@@ -80,6 +80,11 @@ class ModelDefinition(BaseModel):
         None,
         description="Maximum number of tokens to predict (llamacpp --n-predict). Only used when backend is llamacpp.",
     )
+    ubatch_size: int | None = Field(
+        None,
+        ge=1,
+        description="Physical micro-batch size for prompt processing (llamacpp native --ubatch-size; llama.cpp default 512, capped at the logical batch size, default 2048). Only used when backend is llamacpp.",
+    )
     kv_unified: bool | None = Field(
         None,
         description="Use unified KV cache (llamacpp native). Only used when backend is llamacpp.",
@@ -121,6 +126,10 @@ class ModelDefinition(BaseModel):
     spec_draft_n_max: int | None = Field(
         None,
         description="Max draft tokens for speculative decoding (llamacpp native --spec-draft-n-max). Only used when backend is llamacpp.",
+    )
+    spec_model_path: str | None = Field(
+        None,
+        description="Path to a separate draft model for speculative decoding (llamacpp native -md). Needed when the MTP head ships as a sidecar GGUF rather than inside the main model. Only used when backend is llamacpp.",
     )
     verbose: bool | None = Field(
         None,

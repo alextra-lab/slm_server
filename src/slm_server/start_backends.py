@@ -470,9 +470,24 @@ def build_mlx_rerank_command(
 
 
 def find_native_llama_server() -> str | None:
-    """Return path to native llama-server binary (e.g. from brew install llama.cpp), or None."""
-    path = shutil.which("llama-server")
-    return path
+    """Return path to the native llama-server binary, or None if there is none.
+
+    SLM_LLAMA_SERVER_BIN wins when it is set, so the repo-maintained build beside
+    this checkout takes precedence over whatever happens to be on PATH. Homebrew's
+    llama.cpp trails upstream and cannot load every architecture in models.yaml,
+    so PATH is the fallback rather than the default. See scripts/build_llama.sh.
+    """
+    override = os.environ.get("SLM_LLAMA_SERVER_BIN")
+    if override:
+        candidate = Path(override).expanduser()
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+        log.warning(
+            "llama_server_override_unusable",
+            path=override,
+            message="SLM_LLAMA_SERVER_BIN is not an executable file; falling back to PATH",
+        )
+    return shutil.which("llama-server")
 
 
 def build_llama_native_command(
@@ -498,6 +513,7 @@ def build_llama_native_command(
     cache_type_k: str | None = None,
     cache_type_v: str | None = None,
     cache_ram: int | None = None,
+    ubatch_size: int | None = None,
     kv_offload: bool | None = None,
     flash_attn: bool | str | None = None,
     fit: bool | str | None = None,
@@ -506,6 +522,7 @@ def build_llama_native_command(
     cache_prompt: bool | None = None,
     spec_type: str | None = None,
     spec_draft_n_max: int | None = None,
+    spec_model_path: str | Path | None = None,
     verbose: bool | None = None,
 ) -> list[str]:
     """Build command for native llama-server (e.g. from brew install llama.cpp).
@@ -581,6 +598,8 @@ def build_llama_native_command(
         cmd.extend(["--cache-type-v", cache_type_v])
     if cache_ram is not None:
         cmd.extend(["--cache-ram", str(cache_ram)])
+    if ubatch_size is not None:
+        cmd.extend(["--ubatch-size", str(ubatch_size)])
     if kv_offload is not None:
         cmd.append("--kv-offload" if kv_offload else "--no-kv-offload")
     if flash_attn is not None:
@@ -593,6 +612,17 @@ def build_llama_native_command(
         cmd.append("--cont-batching")
     if cache_prompt is not None:
         cmd.append("--cache-prompt" if cache_prompt else "--no-cache-prompt")
+    # -md must precede the spec flags so llama-server associates the draft head with
+    # the target model. Auto-discovery does not look inside an MTP/ subfolder, so a
+    # sidecar draft model has to be named explicitly.
+    if spec_model_path is not None:
+        draft = Path(spec_model_path).expanduser()
+        if not draft.is_file():
+            # ValueError, like every other config check here: start_model_server
+            # catches it and returns None, so one bad path cannot stop the launcher
+            # before the remaining backends start.
+            raise ValueError(f"spec_model_path does not exist: {draft}")
+        cmd.extend(["-md", str(draft)])
     if spec_type is not None:
         cmd.extend(["--spec-type", spec_type])
     if spec_draft_n_max is not None:
@@ -742,6 +772,9 @@ def build_llamacpp_command(
     return cmd
 
 
+LOG_DIR = Path(__file__).resolve().parents[2] / "logs"
+
+
 def start_model_server(model_def, config: ModelConfig) -> subprocess.Popen | None:
     """Start a single model server.
 
@@ -881,6 +914,7 @@ def start_model_server(model_def, config: ModelConfig) -> subprocess.Popen | Non
                     cache_type_k=getattr(model_def, "cache_type_k", None),
                     cache_type_v=getattr(model_def, "cache_type_v", None),
                     cache_ram=getattr(model_def, "cache_ram", None),
+                    ubatch_size=getattr(model_def, "ubatch_size", None),
                     kv_offload=getattr(model_def, "kv_offload", None),
                     flash_attn=getattr(model_def, "flash_attn", None),
                     fit=getattr(model_def, "fit", None),
@@ -889,6 +923,7 @@ def start_model_server(model_def, config: ModelConfig) -> subprocess.Popen | Non
                     cache_prompt=getattr(model_def, "cache_prompt", None),
                     spec_type=getattr(model_def, "spec_type", None),
                     spec_draft_n_max=getattr(model_def, "spec_draft_n_max", None),
+                    spec_model_path=getattr(model_def, "spec_model_path", None),
                     verbose=getattr(model_def, "verbose", None),
                 )
             else:
@@ -926,30 +961,34 @@ def start_model_server(model_def, config: ModelConfig) -> subprocess.Popen | Non
         kw = json.dumps(chat_template_kwargs)
         run_env["LLAMA_CHAT_TEMPLATE_KWARGS"] = kw
         run_env["LLAMA_ARG_CHAT_TEMPLATE_KWARGS"] = kw
-    # When verbose logging is enabled, redirect stderr to a file instead of an
-    # unread PIPE. A running --verbose server would otherwise fill the pipe buffer
-    # (~64KB) and block. The file is also what makes the output reviewable.
-    verbose_log_path: Path | None = None
-    if getattr(model_def, "verbose", None):
-        log_dir = Path(__file__).resolve().parents[2] / "logs"
-        log_dir.mkdir(exist_ok=True)
-        safe_id = re.sub(r"[^A-Za-z0-9._-]", "_", model_def.id)
-        verbose_log_path = log_dir / f"llama-{safe_id}-{model_def.port}.log"
+    # stderr always goes to a file, never an unread PIPE. llama.cpp logs every
+    # request at INFO level; an unread pipe fills at ~64 KB on macOS, the logger
+    # then queues 512 more lines and blocks every thread that logs. The server
+    # froze mid-request after 60-150 requests and ignored SIGTERM, which the
+    # watchdog saw as "no first byte within 300s" (reproduced 2026-09-11).
+    # The previous run's log is kept as .prev so a restart after a stall does
+    # not erase the evidence of what that process was doing.
+    LOG_DIR.mkdir(exist_ok=True)
+    safe_id = re.sub(r"[^A-Za-z0-9._-]", "_", model_def.id)
+    prefix = "llama" if model_def.backend == "llamacpp" else model_def.backend
+    stderr_log_path = LOG_DIR / f"{prefix}-{safe_id}-{model_def.port}.log"
+    if stderr_log_path.exists():
+        stderr_log_path.replace(stderr_log_path.with_name(stderr_log_path.name + ".prev"))
 
     try:
         max_attempts = 3 if model_def.backend == "mlx" else 1
         for attempt in range(1, max_attempts + 1):
-            verbose_log_fh = open(verbose_log_path, "w") if verbose_log_path else None
+            # Append, so an MLX retry keeps the failed attempt's output.
+            stderr_log_fh = open(stderr_log_path, "a")
             process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.DEVNULL,
-                stderr=verbose_log_fh if verbose_log_fh else subprocess.PIPE,
+                stderr=stderr_log_fh,
                 text=True,
                 env=run_env,
             )
             # Child holds its own dup'd fd; the parent's copy can be closed now.
-            if verbose_log_fh:
-                verbose_log_fh.close()
+            stderr_log_fh.close()
 
             # Give the process a moment to fail fast if there are startup errors
             time.sleep(0.5)
@@ -962,23 +1001,16 @@ def start_model_server(model_def, config: ModelConfig) -> subprocess.Popen | Non
                     backend=model_def.backend,
                     port=model_def.port,
                     pid=process.pid,
-                    verbose_log=str(verbose_log_path) if verbose_log_path else None,
+                    stderr_log=str(stderr_log_path),
                 )
                 return process
 
             # Process exited immediately - startup failure; log stderr for debugging.
-            # When verbose-redirected to a file, stderr isn't a PIPE: read the file.
             stderr_out = ""
-            if verbose_log_path is not None:
-                try:
-                    stderr_out = verbose_log_path.read_text().strip()[-4000:]
-                except Exception:
-                    pass
-            elif process.stderr:
-                try:
-                    stderr_out = (process.stderr.read() or "").strip()
-                except Exception:
-                    pass
+            try:
+                stderr_out = stderr_log_path.read_text().strip()[-4000:]
+            except Exception:
+                pass
 
             is_mlx_bootstrap_flake = (
                 model_def.backend == "mlx"
@@ -1039,6 +1071,11 @@ def main() -> None:
     processes: list[tuple[str, subprocess.Popen]] = []
 
     def handle_shutdown_signal(signum, _frame) -> None:
+        # stop.sh signals both the uv wrapper and this process, and uv forwards
+        # its copy, so one shutdown arrives twice. A second KeyboardInterrupt
+        # raised inside _terminate_processes aborted the cleanup. Ignore repeats.
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
         signal_name = signal.Signals(signum).name
         log.info("shutdown_signal_received", signal=signal_name)
         raise KeyboardInterrupt

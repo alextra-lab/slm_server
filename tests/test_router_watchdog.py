@@ -264,3 +264,86 @@ def test_non_streaming_requests_are_not_stall_tracked(client: TestClient) -> Non
 
     assert _chat(client).status_code == 200
     assert tracked == [0], "the non-streaming path must not register an in-flight request"
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Failed to parse tool call arguments as JSON: [json.exception.parse_error.101] "
+        "parse error at line 1, column 12225",
+        "Context size has been exceeded.",
+    ],
+)
+def test_a_request_level_500_never_trips_a_restart(
+    client: TestClient, watchdog_settings: wd.WatchdogSettings, message: str
+) -> None:
+    """A 500 that describes the request must not restart a healthy backend.
+
+    2026-09-13: a conversation re-sent with a tool call truncated at max_tokens got
+    HTTP 500 on every retry, and the watchdog restarted the backend three times
+    overnight, killing every other in-flight stream each time.
+    """
+
+    async def reject(url: str, **_kwargs: object) -> httpx.Response:
+        return httpx.Response(
+            500, json={"error": {"code": 500, "message": message, "type": "server_error"}}
+        )
+
+    app.state.http_client.post = reject  # type: ignore[method-assign]
+    for _ in range(4):
+        assert _chat(client).status_code == 500
+
+    assert wd.read_restart_requests(watchdog_settings.request_dir) == []
+    events = [
+        json.loads(line)
+        for line in watchdog_settings.log_path.read_text().splitlines()
+        if line.strip()
+    ]
+    assert [e["event"] for e in events].count("request_error") == 4
+    assert [e for e in events if e["event"] == "backend_failure"] == []
+
+
+def _stream_chat(client: TestClient) -> httpx.Response:
+    return client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "unsloth/qwen3.6-35-A3B",
+            "stream": True,
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+
+
+def test_a_request_level_500_on_the_streaming_path_never_trips_a_restart(
+    client: TestClient, watchdog_settings: wd.WatchdogSettings
+) -> None:
+    """stream=True requests take _stream_backend_response, a separate error path."""
+    body = {
+        "error": {
+            "code": 500,
+            "message": "Failed to parse tool call arguments as JSON: parse error at line 1",
+            "type": "server_error",
+        }
+    }
+
+    async def reject(_request: object, **_kwargs: object) -> httpx.Response:
+        return httpx.Response(500, json=body)
+
+    app.state.http_client.send = reject  # type: ignore[method-assign]
+    for _ in range(3):
+        assert _stream_chat(client).status_code == 500
+
+    assert wd.read_restart_requests(watchdog_settings.request_dir) == []
+
+
+def test_a_generic_500_on_the_streaming_path_still_trips_a_restart(
+    client: TestClient, watchdog_settings: wd.WatchdogSettings
+) -> None:
+    async def fail(_request: object, **_kwargs: object) -> httpx.Response:
+        return httpx.Response(500, json={"error": {"code": 500, "message": "decode failed"}})
+
+    app.state.http_client.send = fail  # type: ignore[method-assign]
+    for _ in range(3):
+        assert _stream_chat(client).status_code == 500
+
+    assert len(wd.read_restart_requests(watchdog_settings.request_dir)) == 1

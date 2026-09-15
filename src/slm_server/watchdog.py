@@ -51,6 +51,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shutil
 import subprocess
 import time
 from collections.abc import Callable, Iterator
@@ -82,6 +84,38 @@ CALLER_FAULT_STATUSES: frozenset[int] = frozenset({400, 404, 422})
 BACKEND_FAULT_STATUSES: frozenset[int] = frozenset({408, 425, 429})
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+# llama-server answers these with HTTP 500, but each describes the request, not the
+# backend's health. A conversation carrying a tool call truncated by max_tokens fails
+# to parse (ggml-org/llama.cpp#25510: it should be a 4xx), and a request can outgrow
+# the shared KV pool while other slots hold long contexts. A restart fixes neither and
+# kills every other in-flight request: on 2026-09-13 it caused three restarts overnight.
+REQUEST_ERROR_MARKERS: tuple[str, ...] = (
+    "Failed to parse tool call arguments",
+    "Failed to parse input",
+    "Context size has been exceeded",
+)
+
+
+def is_request_error(detail: object, status: int) -> bool:
+    """Say whether a backend error body describes the request rather than the backend.
+
+    Only a 500 qualifies, because that is the status llama-server uses for these
+    messages. Any other status keeps its normal classification, so a backend-wide
+    failure whose body happens to contain a marker still counts.
+
+    Args:
+        detail: The parsed error body, or the raw text the backend returned.
+        status: The HTTP status the backend returned.
+
+    Returns:
+        True when the status is 500 and the body carries one of `REQUEST_ERROR_MARKERS`.
+    """
+    if status != 500:
+        return False
+    text = str(detail)
+    return any(marker in text for marker in REQUEST_ERROR_MARKERS)
 
 
 def classify_status(status: int) -> tuple[StatusVerdict, FailureKind | None]:
@@ -159,6 +193,11 @@ class WatchdogSettings:
             the first trip past the window is serviced.
         request_dir: Directory holding pending restart requests.
         log_path: JSONL file recording every watchdog decision.
+        backend_log_dir: Directory whose backend stderr logs the supervisor trims.
+            None disables trimming. Only `load_settings` sets it, so settings
+            built directly (tests) never touch the live `logs/` directory.
+        backend_log_max_bytes: Size above which a backend log is copied to
+            `.prev` and truncated. 0 disables trimming.
     """
 
     enabled: bool = True
@@ -171,6 +210,8 @@ class WatchdogSettings:
     startup_grace_seconds: float = 90.0
     request_dir: Path = _REPO_ROOT / "logs" / "watchdog" / "requests"
     log_path: Path = _REPO_ROOT / "logs" / "watchdog.jsonl"
+    backend_log_dir: Path | None = None
+    backend_log_max_bytes: int = 100 * 1024 * 1024
 
     def as_log_fields(self) -> dict[str, object]:
         """Every tunable actually in effect, for the startup log line.
@@ -194,6 +235,8 @@ class WatchdogSettings:
             "startup_grace_seconds": self.startup_grace_seconds,
             "request_dir": str(self.request_dir),
             "log_path": str(self.log_path),
+            "backend_log_dir": str(self.backend_log_dir) if self.backend_log_dir else None,
+            "backend_log_max_bytes": self.backend_log_max_bytes,
         }
 
 
@@ -211,6 +254,7 @@ def load_settings() -> WatchdogSettings:
     defaults = WatchdogSettings()
     request_dir = os.getenv("SLM_WATCHDOG_REQUEST_DIR")
     log_path = os.getenv("SLM_WATCHDOG_LOG_PATH")
+    backend_log_dir = os.getenv("SLM_BACKEND_LOG_DIR")
     return WatchdogSettings(
         enabled=os.getenv("SLM_WATCHDOG_ENABLED", "true").lower() != "false",
         failure_threshold=_env_int("SLM_WATCHDOG_FAILURE_THRESHOLD", 2),
@@ -222,6 +266,8 @@ def load_settings() -> WatchdogSettings:
         startup_grace_seconds=_env_float("SLM_WATCHDOG_STARTUP_GRACE_SECONDS", 90.0),
         request_dir=Path(request_dir) if request_dir else defaults.request_dir,
         log_path=Path(log_path) if log_path else defaults.log_path,
+        backend_log_dir=Path(backend_log_dir) if backend_log_dir else _REPO_ROOT / "logs",
+        backend_log_max_bytes=_env_int("SLM_BACKEND_LOG_MAX_MB", 100) * 1024 * 1024,
     )
 
 
@@ -530,6 +576,29 @@ class RouterWatchdog:
         if tripped:
             self._request_restart(port, kind, detail)
 
+    def record_request_error(self, port: int, status: int, detail: str = "") -> None:
+        """Record a backend error that describes the request, not the backend.
+
+        Neither counted nor reset, like an unclassified status, but logged under
+        its own name so the cause stays visible. See `REQUEST_ERROR_MARKERS`.
+
+        Args:
+            port: Backend port that answered.
+            status: HTTP status it returned.
+            detail: The error message, trimmed for the log.
+        """
+        if not self.settings.enabled:
+            return
+        log.warning("watchdog_request_error_not_counted", port=port, status=status)
+        append_event(
+            self.settings.log_path,
+            "request_error",
+            port=port,
+            model_id=self._model_ids.get(port),
+            status=status,
+            detail=detail[:300],
+        )
+
     def record_unclassified(self, port: int, status: int) -> None:
         """Record a status the classifier had no opinion about.
 
@@ -590,6 +659,58 @@ class RouterWatchdog:
                 "stall",
                 f"no first byte within {self.settings.stall_seconds:.0f}s",
             )
+
+
+# --------------------------------------------------------------------------
+# Backend log size — runs inside the backends launcher
+# --------------------------------------------------------------------------
+
+# Names the launcher gives backend stderr logs: `<prefix>-<id>-<port>.log`, with
+# prefix `llama` or the backend name (`mlx`, `mlx-rerank`). The launcher opens
+# them in append mode, so truncating one is safe while its backend runs: the
+# next write lands at the new end of file. Other files in `logs/` (start.out,
+# watchdog.jsonl) are written differently and are never matched.
+BACKEND_LOG_NAME = re.compile(r"^(llama|mlx)-.+-\d+\.log$")
+
+
+def trim_backend_logs(log_dir: Path, max_bytes: int) -> list[Path]:
+    """Copy each oversized backend log to `.prev`, then truncate it.
+
+    llama-server logs every request at INFO, and the log otherwise rotates only
+    when the backend restarts, so a long uptime grows it without bound. Lines
+    written between the copy and the truncate are lost, which is acceptable for
+    a diagnostic log.
+
+    Fail-soft: a log that cannot be trimmed is logged and skipped.
+
+    Args:
+        log_dir: Directory holding the backend logs.
+        max_bytes: Size above which a log is trimmed. 0 or less disables trimming.
+
+    Returns:
+        The logs that were trimmed.
+    """
+    trimmed: list[Path] = []
+    if max_bytes <= 0:
+        return trimmed
+    try:
+        candidates = sorted(log_dir.glob("*.log"))
+    except OSError:
+        return trimmed
+    for path in candidates:
+        if not BACKEND_LOG_NAME.match(path.name):
+            continue
+        try:
+            if path.stat().st_size <= max_bytes:
+                continue
+            shutil.copyfile(path, path.with_name(path.name + ".prev"))
+            with open(path, "r+b") as handle:
+                handle.truncate(0)
+        except OSError as exc:
+            log.warning("backend_log_trim_failed", path=str(path), error=str(exc))
+            continue
+        trimmed.append(path)
+    return trimmed
 
 
 # --------------------------------------------------------------------------
@@ -995,9 +1116,14 @@ class BackendSupervisor:
         return serviced
 
     def poll_once(self) -> None:
-        """Run one supervision sweep: pending requests, then exited processes."""
+        """Run one supervision sweep: pending requests, exited processes, log size."""
         self.check_requests()
         self.check_exited()
+        if self.settings.backend_log_dir is not None:
+            for path in trim_backend_logs(
+                self.settings.backend_log_dir, self.settings.backend_log_max_bytes
+            ):
+                append_event(self.settings.log_path, "backend_log_trimmed", path=str(path))
 
     def run(self, should_continue: Callable[[], bool] = lambda: True) -> None:
         """Supervise until every backend is abandoned or `should_continue` is False.

@@ -1,0 +1,32 @@
+{"model": "qwen36", "depth": 0, "test": "raw_speed", "completion_tok": 400, "decode_tok_s": 71.48, "prefill_tok_s": 175.88, "draft_n": null, "draft_acc": null, "wall_s": 5.75}
+{"model": "qwen36", "depth": 0, "test": "reasoning_on", "completion_tok": 2015, "answer_chars": 3908, "reasoning_chars": 6327, "finish": "stop", "decode_tok_s": 69.58, "draft_n": null, "draft_acc": null, "wall_s": 28.99}
+{"model": "qwen36", "depth": 1, "test": "raw_speed", "completion_tok": 400, "decode_tok_s": 90.4, "prefill_tok_s": 182.49, "draft_n": 208, "draft_acc": 191, "wall_s": 4.58}
+{"model": "qwen36", "depth": 1, "test": "reasoning_on", "completion_tok": 2168, "answer_chars": 3769, "reasoning_chars": 7016, "finish": "stop", "decode_tok_s": 83.83, "draft_n": 1173, "draft_acc": 995, "wall_s": 25.89}
+{"model": "qwen36", "depth": 2, "test": "raw_speed", "completion_tok": 400, "decode_tok_s": 88.91, "prefill_tok_s": 162.02, "draft_n": 296, "draft_acc": 251, "wall_s": 4.67}
+{"model": "qwen36", "depth": 2, "test": "reasoning_on", "completion_tok": 2018, "answer_chars": 3789, "reasoning_chars": 6387, "finish": "stop", "decode_tok_s": 80.15, "draft_n": 1658, "draft_acc": 1190, "wall_s": 25.21}
+{"model": "qwen36", "depth": 3, "test": "raw_speed", "completion_tok": 400, "decode_tok_s": 90.19, "prefill_tok_s": 164.55, "draft_n": 379, "draft_acc": 272, "wall_s": 4.6}
+{"model": "qwen36", "depth": 3, "test": "reasoning_on", "completion_tok": 2018, "answer_chars": 3789, "reasoning_chars": 6387, "finish": "stop", "decode_tok_s": 75.46, "draft_n": 2115, "draft_acc": 1315, "wall_s": 26.76}
+{"model": "flash", "depth": 0, "test": "raw_speed", "completion_tok": 400, "decode_tok_s": 29.42, "prefill_tok_s": 92.87, "draft_n": null, "draft_acc": null, "wall_s": 13.88}
+{"model": "flash", "depth": 0, "test": "reasoning_on", "completion_tok": 1166, "answer_chars": 4361, "reasoning_chars": 800, "finish": "stop", "decode_tok_s": 26.22, "draft_n": null, "draft_acc": null, "wall_s": 44.53}
+{"model": "flash", "depth": 1, "test": "raw_speed", "completion_tok": 400, "decode_tok_s": 41.29, "prefill_tok_s": 85.15, "draft_n": 221, "draft_acc": 178, "wall_s": 10.01}
+{"model": "flash", "depth": 1, "test": "reasoning_on", "completion_tok": 1127, "answer_chars": 4155, "reasoning_chars": 800, "finish": "stop", "decode_tok_s": 31.25, "draft_n": 622, "draft_acc": 504, "wall_s": 36.1}
+{"model": "flash", "depth": 2, "test": "raw_speed", "completion_tok": 400, "decode_tok_s": 37.21, "prefill_tok_s": 86.06, "draft_n": 338, "draft_acc": 229, "wall_s": 11.07}
+{"model": "flash", "depth": 2, "test": "reasoning_on", "completion_tok": 1103, "answer_chars": 4067, "reasoning_chars": 800, "finish": "stop", "decode_tok_s": 27.98, "draft_n": 922, "draft_acc": 642, "wall_s": 39.46}
+{"model": "flash", "depth": 3, "test": "raw_speed", "completion_tok": 400, "decode_tok_s": 30.73, "prefill_tok_s": 85.4, "draft_n": 453, "draft_acc": 247, "wall_s": 13.33}
+{"model": "flash", "depth": 3, "test": "reasoning_on", "completion_tok": 1089, "answer_chars": 4002, "reasoning_chars": 800, "finish": "stop", "decode_tok_s": 24.82, "draft_n": 1194, "draft_acc": 692, "wall_s": 43.91}
+{"model": "qwen36", "depth": 0, "test": "raw_speed", "completion_tok": 400, "decode_tok_s": 73.22, "prefill_tok_s": 162.54, "draft_n": null, "draft_acc": null, "wall_s": 5.63}
+{"model": "qwen36", "depth": 0, "test": "reasoning_on", "completion_tok": 2015, "answer_chars": 3908, "reasoning_chars": 6327, "finish": "stop", "decode_tok_s": 70.0, "draft_n": null, "draft_acc": null, "wall_s": 28.8}
+{"model": "qwen36", "depth": 1, "test": "raw_speed", "completion_tok": 400, "decode_tok_s": 91.67, "prefill_tok_s": 167.55, "draft_n": 208, "draft_acc": 191, "wall_s": 4.53}
+{"model": "qwen36", "depth": 1, "test": "reasoning_on", "completion_tok": 2168, "answer_chars": 3769, "reasoning_chars": 7016, "finish": "stop", "decode_tok_s": 86.02, "draft_n": 1173, "draft_acc": 995, "wall_s": 25.23}
+{"model": "qwen36", "depth": 2, "test": "raw_speed", "completion_tok": 400, "decode_tok_s": 93.08, "prefill_tok_s": 166.09, "draft_n": 296, "draft_acc": 251, "wall_s": 4.47}
+{"model": "qwen36", "depth": 2, "test": "reasoning_on", "completion_tok": 2018, "answer_chars": 3789, "reasoning_chars": 6387, "finish": "stop", "decode_tok_s": 80.7, "draft_n": 1658, "draft_acc": 1190, "wall_s": 25.04}
+{"model": "qwen36", "depth": 3, "test": "raw_speed", "completion_tok": 400, "decode_tok_s": 89.54, "prefill_tok_s": 175.61, "draft_n": 379, "draft_acc": 272, "wall_s": 4.63}
+{"model": "qwen36", "depth": 3, "test": "reasoning_on", "completion_tok": 2018, "answer_chars": 3789, "reasoning_chars": 6387, "finish": "stop", "decode_tok_s": 69.38, "draft_n": 2115, "draft_acc": 1315, "wall_s": 29.11}
+{"model": "flash", "depth": 0, "test": "raw_speed", "completion_tok": 400, "decode_tok_s": 29.76, "prefill_tok_s": 95.51, "draft_n": null, "draft_acc": null, "wall_s": 13.72}
+{"model": "flash", "depth": 0, "test": "reasoning_on", "completion_tok": 1166, "answer_chars": 4361, "reasoning_chars": 800, "finish": "stop", "decode_tok_s": 29.41, "draft_n": null, "draft_acc": null, "wall_s": 39.69}
+{"model": "flash", "depth": 1, "test": "raw_speed", "completion_tok": 400, "decode_tok_s": 36.16, "prefill_tok_s": 91.87, "draft_n": 221, "draft_acc": 178, "wall_s": 11.36}
+{"model": "flash", "depth": 1, "test": "reasoning_on", "completion_tok": 1127, "answer_chars": 4155, "reasoning_chars": 800, "finish": "stop", "decode_tok_s": 35.12, "draft_n": 622, "draft_acc": 504, "wall_s": 32.13}
+{"model": "flash", "depth": 2, "test": "raw_speed", "completion_tok": 400, "decode_tok_s": 33.81, "prefill_tok_s": 92.22, "draft_n": 338, "draft_acc": 229, "wall_s": 12.12}
+{"model": "flash", "depth": 2, "test": "reasoning_on", "completion_tok": 1103, "answer_chars": 4067, "reasoning_chars": 800, "finish": "stop", "decode_tok_s": 33.55, "draft_n": 922, "draft_acc": 642, "wall_s": 32.92}
+{"model": "flash", "depth": 3, "test": "raw_speed", "completion_tok": 400, "decode_tok_s": 30.31, "prefill_tok_s": 80.6, "draft_n": 453, "draft_acc": 247, "wall_s": 13.53}
+{"model": "flash", "depth": 3, "test": "reasoning_on", "completion_tok": 1089, "answer_chars": 4002, "reasoning_chars": 800, "finish": "stop", "decode_tok_s": 30.84, "draft_n": 1194, "draft_acc": 692, "wall_s": 35.36}
