@@ -352,6 +352,36 @@ def _sse_headers(headers: httpx.Headers) -> dict[str, str]:
     return result
 
 
+def _prepare_chat_template_kwargs(
+    body: dict[str, Any], model_def: ModelDefinition
+) -> dict[str, Any]:
+    """Return a copy of `body` with this backend's chat_template_kwargs applied.
+
+    llama.cpp and MLX: unchanged behaviour. The config kwargs are injected only when the
+    request carries none; llama-server merges request kwargs over its launch kwargs itself.
+
+    MTPLX: the config and request kwargs merge per key (request wins), matching llama-server.
+    MTPLX reads chat_template_kwargs.enable_thinking but not .reasoning_effort, so a
+    reasoning_effort the REQUEST put in its kwargs is lifted to the top level. Config kwargs
+    never hold that key on an MTPLX entry (validation), so the configured effort comes only
+    from the launch flag.
+    """
+    out = dict(body)
+    config_kwargs = model_def.chat_template_kwargs or {}
+    if model_def.backend != "mtplx":
+        if config_kwargs and "chat_template_kwargs" not in out:
+            out["chat_template_kwargs"] = config_kwargs
+        return out
+    raw_request_kwargs = body.get("chat_template_kwargs")
+    request_kwargs = raw_request_kwargs if isinstance(raw_request_kwargs, dict) else {}
+    merged = {**config_kwargs, **request_kwargs}
+    if merged:
+        out["chat_template_kwargs"] = merged
+    if "reasoning_effort" in request_kwargs and "reasoning_effort" not in out:
+        out["reasoning_effort"] = request_kwargs["reasoning_effort"]
+    return out
+
+
 def _convert_responses_to_chat(body: dict) -> dict:
     """Convert /v1/responses request format to /v1/chat/completions format.
 
@@ -820,11 +850,7 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
         body_forward = dict(body)
         request_timeout_seconds = _resolve_backend_timeout_seconds(body_forward, model_def)
         body_forward.pop("timeout", None)
-        if (
-            getattr(model_def, "chat_template_kwargs", None)
-            and "chat_template_kwargs" not in body_forward
-        ):
-            body_forward["chat_template_kwargs"] = model_def.chat_template_kwargs
+        body_forward = _prepare_chat_template_kwargs(body_forward, model_def)
 
         # Override timeout for this request based on model config
         timeout = httpx.Timeout(connect=10.0, read=request_timeout_seconds, write=30.0, pool=10.0)
@@ -1345,12 +1371,9 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
                     "converting to /v1/chat/completions"
                 ),
             )
-            chat_body = _convert_responses_to_chat(body_forward)
-            if (
-                getattr(model_def, "chat_template_kwargs", None)
-                and "chat_template_kwargs" not in chat_body
-            ):
-                chat_body["chat_template_kwargs"] = model_def.chat_template_kwargs
+            chat_body = _prepare_chat_template_kwargs(
+                _convert_responses_to_chat(body_forward), model_def
+            )
             try:
                 fallback_response = await _open_backend_stream(
                     client=client,
@@ -1463,12 +1486,9 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
         )
 
         # Convert request format
-        chat_body = _convert_responses_to_chat(body_forward)
-        if (
-            getattr(model_def, "chat_template_kwargs", None)
-            and "chat_template_kwargs" not in chat_body
-        ):
-            chat_body["chat_template_kwargs"] = model_def.chat_template_kwargs
+        chat_body = _prepare_chat_template_kwargs(
+            _convert_responses_to_chat(body_forward), model_def
+        )
         fallback_url = _get_backend_url(model_def, "/v1/chat/completions")
 
         response = await client.post(
