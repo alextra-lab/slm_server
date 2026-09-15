@@ -347,3 +347,52 @@ def test_a_generic_500_on_the_streaming_path_still_trips_a_restart(
         assert _stream_chat(client).status_code == 500
 
     assert len(wd.read_restart_requests(watchdog_settings.request_dir)) == 1
+
+
+def _disabled_model_def() -> ModelDefinition:
+    return ModelDefinition(
+        id="mtplx-idle",
+        backend="llamacpp",
+        port=8600,
+        context_length=32768,
+        quantization="4bit",
+        max_concurrency=1,
+        default_timeout=120,
+        model_path="hf/stub",
+        enabled=False,
+    )
+
+
+@pytest.mark.parametrize(("model_id", "status"), [("mtplx-idle", 404), ("no-such-model", 404)])
+def test_router_raised_lookup_errors_are_not_scored(
+    monkeypatch: pytest.MonkeyPatch,
+    watchdog_settings: wd.WatchdogSettings,
+    model_id: str,
+    status: int,
+) -> None:
+    """A request for the engine that is not loaded is normal during swaps.
+
+    It must return a 4xx (clients do not retry it) and never reach the watchdog, which
+    only scores responses after an endpoint sets request.state.backend_port.
+    """
+    cfg = ModelConfig(models={"reasoning": _model_def(), "idle": _disabled_model_def()})
+    monkeypatch.setattr(
+        router_module, "load_model_config", lambda config_path=None, validate=True: cfg
+    )
+    monkeypatch.setattr(router_module, "load_watchdog_settings", lambda: watchdog_settings)
+    with TestClient(app) as test_client:
+        recorded: list[str] = []
+        watchdog = app.state.watchdog
+        for name in (
+            "record_success",
+            "record_failure",
+            "record_unclassified",
+            "record_request_error",
+        ):
+            monkeypatch.setattr(watchdog, name, lambda *a, _n=name, **k: recorded.append(_n))
+        response = test_client.post(
+            "/v1/chat/completions",
+            json={"model": model_id, "messages": [{"role": "user", "content": "hi"}]},
+        )
+    assert response.status_code == status
+    assert recorded == []

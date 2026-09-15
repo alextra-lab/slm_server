@@ -281,8 +281,10 @@ def _get_model_definition(model_id: str, config: ModelConfig) -> ModelDefinition
         )
 
     if disabled_match_found:
+        # 404, not 503: with one heavy engine loaded at a time, a request for the engine
+        # that is not loaded is normal during a swap, and clients retry a 5xx.
         raise HTTPException(
-            status_code=503,
+            status_code=404,
             detail=f"Model '{model_id}' is configured but currently disabled.",
         )
 
