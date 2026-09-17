@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: MIT -->
+
 # llama.cpp patches
 
 `scripts/build_llama.sh` merges a fixed upstream master commit into the pinned

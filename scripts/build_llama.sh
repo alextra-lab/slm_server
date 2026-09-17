@@ -51,7 +51,12 @@ if ! git cat-file -e "$MASTER_PIN^{commit}" 2>/dev/null; then
     git fetch origin master
 fi
 echo "==> merging master $MASTER_PIN"
-git -c user.name=build -c user.email=build@local merge --no-commit --no-ff "$MASTER_PIN" || true
+if ! git -c user.name=build -c user.email=build@local merge --no-commit --no-ff "$MASTER_PIN"; then
+    if [ -z "$(git diff --name-only --diff-filter=U)" ]; then
+        echo "merge failed, and not because of a conflict" >&2
+        exit 1
+    fi
+fi
 
 # #28896 reshaped the qwen4exp norm gammas to { n_embd, hc } and fused rms_norm+mul,
 # while the pin still creates them as { hc_dim }, so src/models/qwen4exp.cpp conflicts.
@@ -80,6 +85,19 @@ if [ -n "$UNMERGED" ]; then
 fi
 git -c user.name=build -c user.email=build@local commit --no-edit \
     -m "merge upstream master $MASTER_PIN into qwen4exp/mtp pin"
+
+# The point of this script is to rebuild what production runs, so assert it. The
+# checks above cover the conflict path only, and a future MASTER_PIN can merge
+# this file cleanly but differently. The tree hash covers every file and every path.
+EXPECTED_TREE="91123c7e3b211337fcdbb9a0ecc033b5b279184b"
+GOT_TREE="$(git rev-parse HEAD^{tree})"
+if [ "$GOT_TREE" != "$EXPECTED_TREE" ]; then
+    echo "merged tree does not match the tested build" >&2
+    echo "  expected $EXPECTED_TREE" >&2
+    echo "  got      $GOT_TREE" >&2
+    echo "  update EXPECTED_TREE only after you benchmark the new binary" >&2
+    exit 1
+fi
 
 echo "==> HEAD: $(git log -1 --format='%h %ad %s' --date=short)"
 
