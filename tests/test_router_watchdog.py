@@ -291,7 +291,7 @@ def test_a_request_level_500_never_trips_a_restart(
 
     app.state.http_client.post = reject  # type: ignore[method-assign]
     for _ in range(4):
-        assert _chat(client).status_code == 500
+        assert _chat(client).status_code == 400
 
     assert wd.read_restart_requests(watchdog_settings.request_dir) == []
     events = [
@@ -331,9 +331,51 @@ def test_a_request_level_500_on_the_streaming_path_never_trips_a_restart(
 
     app.state.http_client.send = reject  # type: ignore[method-assign]
     for _ in range(3):
-        assert _stream_chat(client).status_code == 500
+        assert _stream_chat(client).status_code == 400
 
     assert wd.read_restart_requests(watchdog_settings.request_dir) == []
+
+
+def test_a_request_level_500_reaches_the_caller_as_a_400(
+    client: TestClient, watchdog_settings: wd.WatchdogSettings
+) -> None:
+    """Issue #15: the caller must see its own fault as a 4xx, not a retryable 500.
+
+    llama-server answers a history whose tool-call arguments are not valid JSON with
+    HTTP 500. Clients retry 5xx, so each malformed request was sent four times. The
+    watchdog log keeps the status the backend actually returned.
+    """
+    message = (
+        "Failed to parse tool call arguments as JSON: [json.exception.parse_error.101] "
+        "parse error at line 1, column 12225"
+    )
+
+    async def reject(url: str, **_kwargs: object) -> httpx.Response:
+        return httpx.Response(
+            500, json={"error": {"code": 500, "message": message, "type": "server_error"}}
+        )
+
+    app.state.http_client.post = reject  # type: ignore[method-assign]
+    response = _chat(client)
+
+    assert response.status_code == 400
+    error = response.json()["error"]
+    assert error["type"] == "invalid_request_error"
+    assert error["message"] == message
+    events = [
+        json.loads(line)
+        for line in watchdog_settings.log_path.read_text().splitlines()
+        if line.strip()
+    ]
+    assert [e["status"] for e in events if e["event"] == "request_error"] == [500]
+
+
+def test_a_generic_500_still_reaches_the_caller_as_a_500(client: TestClient) -> None:
+    async def fail(url: str, **_kwargs: object) -> httpx.Response:
+        return httpx.Response(500, json={"error": {"code": 500, "message": "decode failed"}})
+
+    app.state.http_client.post = fail  # type: ignore[method-assign]
+    assert _chat(client).status_code == 500
 
 
 def test_a_generic_500_on_the_streaming_path_still_trips_a_restart(

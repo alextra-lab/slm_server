@@ -4,8 +4,8 @@
 # Why this exists (2026-09-03): Homebrew's llama.cpp v0.3.0 (build 10621) predates
 # the qwen4exp architecture merge, so it cannot load Qwen3.8-Flash-Next at all --
 # it fails with "unknown model architecture: 'qwen4exp'". PR #28243 adds the MTP
-# draft-head support that Flash-Next needs for speculative decoding. That PR is an
-# open draft upstream, so it is pinned by commit here rather than tracked.
+# draft-head support that Flash-Next needs for speculative decoding. That PR is open
+# and unmerged upstream, so it is pinned by commit here rather than tracked.
 #
 # The checkout lives beside this repo, not inside it: the build tree is ~360 MB and
 # has no business in slm_server's history.
@@ -34,23 +34,28 @@ if ! git cat-file -e "$PIN^{commit}" 2>/dev/null; then
     # Draft PR commits are not on any branch; fetch the PR head that carries it.
     git fetch origin "pull/28243/head:pr28243" --force || git fetch origin
 fi
+git merge --abort 2>/dev/null || true
 git checkout --detach "$PIN"
 
-# Upstream master merged on top of the pinned PR branch (2026-09-10).
-# The pin (#28243) is an unmerged draft, so upstream fixes cannot arrive by moving
-# the pin. They are merged in instead, at a fixed master commit so the build stays
-# reproducible. This merge subsumes the earlier GDN cherry-pick (#28068), which is
-# now in master. Verified conflict-free; MTP acceptance unchanged at 0.703.
-# Key contents: #28330 (skip the unused indexer V cache on qwen4exp),
-# #28390 (single-device drafter skips the meta backend wrapper),
-# #28302 (context-checkpoint eviction only when the list is full).
-MASTER_PIN="${LLAMA_MASTER_PIN:-311d4211bf1611ff7ca6b67035a4a07c79766efc}"
-if ! git cat-file -e "$MASTER_PIN^{commit}" 2>/dev/null; then
-    echo "==> fetching master for $MASTER_PIN"
-    git fetch origin master
+# No master merge happens here any more (2026-10-01). Upstream rebased PR #28243 and
+# merged master into it at 2026-09-21, and resolved the src/models/qwen4exp.cpp
+# conflict this script used to patch by hand, the same way: master's { n_embd, hc }
+# norm-gamma shapes plus the matching reshape of layer.nextn.hc_head_norm. The pin is
+# that merge, so the checkout alone is the tested source. Earlier pins needed a fixed
+# MASTER_PIN merged on top; if upstream stalls again, re-add that step rather than
+# moving the pin to a master commit, which has no qwen4exp MTP at all.
+
+# The point of this script is to rebuild what production runs, so assert it. The tree
+# hash covers every file, so a pin that is not the tested commit stops the build.
+EXPECTED_TREE="1056b367d35e2b030d0b48fe089229880f5dde3a"
+GOT_TREE="$(git rev-parse HEAD^{tree})"
+if [ "$GOT_TREE" != "$EXPECTED_TREE" ]; then
+    echo "checked-out tree does not match the tested build" >&2
+    echo "  expected $EXPECTED_TREE" >&2
+    echo "  got      $GOT_TREE" >&2
+    echo "  update EXPECTED_TREE only after you benchmark the new binary" >&2
+    exit 1
 fi
-echo "==> merging master $MASTER_PIN"
-git -c user.name=build -c user.email=build@local merge --no-edit "$MASTER_PIN"
 
 echo "==> HEAD: $(git log -1 --format='%h %ad %s' --date=short)"
 

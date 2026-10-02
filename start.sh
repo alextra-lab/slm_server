@@ -177,19 +177,27 @@ echo "🔄 Starting routing service..."
 uv run python -m slm_server router &
 ROUTER_PID=$!
 
-# Wait a bit for router to start
-sleep 2
+# Wait for the router to bind, the same bounded way the backend ports are checked.
+# A fixed 2 second sleep was too short: startup loads the model config, initialises
+# the watchdog and installs the OTLP exporter, measured at ~4 seconds on 2026-10-01,
+# so the check failed and killed a healthy backend.
+router_attempts=60
+router_attempt=0
+while [ $router_attempt -lt $router_attempts ]; do
+    if ! kill -0 "$ROUTER_PID" 2>/dev/null; then
+        echo "❌ Error: Routing service process exited unexpectedly (pid $ROUTER_PID)"
+        kill $BACKEND_PID 2>/dev/null || true
+        exit 1
+    fi
+    if check_port 8000; then
+        break
+    fi
+    router_attempt=$((router_attempt + 1))
+    sleep 1
+done
 
-# Ensure router process did not die immediately (e.g., port already in use).
-if ! kill -0 "$ROUTER_PID" 2>/dev/null; then
-    echo "❌ Error: Routing service process exited unexpectedly (pid $ROUTER_PID)"
-    kill $BACKEND_PID 2>/dev/null || true
-    exit 1
-fi
-
-# Verify router is ready
 if ! check_port 8000; then
-    echo "❌ Error: Routing service failed to start on port 8000"
+    echo "❌ Error: Routing service failed to start on port 8000 within ${router_attempts}s"
     kill $BACKEND_PID $ROUTER_PID 2>/dev/null || true
     exit 1
 fi
