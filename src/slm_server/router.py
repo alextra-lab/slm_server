@@ -122,12 +122,14 @@ async def _watchdog_outcome_middleware(request: Request, call_next):
     response = await call_next(request)
     port = getattr(request.state, "backend_port", None)
     watchdog: RouterWatchdog | None = getattr(request.app.state, "watchdog", None)
-    if port is None or watchdog is None:
-        return response
 
     request_error = getattr(request.state, "request_error", None)
     if request_error is not None:
-        watchdog.record_request_error(port, response.status_code, request_error)
+        if port is not None and watchdog is not None:
+            watchdog.record_request_error(port, response.status_code, request_error)
+        return await _request_error_response(response)
+
+    if port is None or watchdog is None:
         return response
 
     verdict, kind = classify_status(response.status_code)
@@ -140,6 +142,35 @@ async def _watchdog_outcome_middleware(request: Request, call_next):
         # has no opinion about cannot vanish. See record_unclassified.
         watchdog.record_unclassified(port, response.status_code)
     return response
+
+
+async def _request_error_response(response) -> JSONResponse:
+    """Answer 400 for a request that llama-server rejected with HTTP 500.
+
+    llama-server reports some faults in the request itself as 500, for example tool-call
+    arguments that are not valid JSON (ggml-org/llama.cpp#25510). Clients retry a 5xx,
+    so one malformed request was sent four times (issue #15). The caller gets 400 with
+    the backend's message instead. The watchdog records the backend's real status
+    before this rewrite, in the middleware above.
+
+    Args:
+        response: The proxied response, whose body is the backend's error JSON.
+
+    Returns:
+        An OpenAI-format 400 error carrying the backend's message.
+    """
+    raw = b"".join(
+        [
+            chunk if isinstance(chunk, bytes) else chunk.encode()
+            async for chunk in response.body_iterator
+        ]
+    )
+    message = raw.decode(errors="replace")[:500]
+    try:
+        message = json.loads(raw)["error"]["message"]
+    except (json.JSONDecodeError, KeyError, TypeError):
+        pass
+    return _build_error_response(400, message, error_type="invalid_request_error")
 
 
 class _InFlightHandle:
