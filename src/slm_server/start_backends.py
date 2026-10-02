@@ -15,7 +15,13 @@ from typing import Literal, cast
 import structlog
 from structlog import get_logger
 
-from slm_server.config import ModelConfig, load_model_config
+from slm_server.config import (
+    ModelConfig,
+    ModelDefinition,
+    check_memory_budget,
+    load_model_config,
+    mtplx_config_errors,
+)
 from slm_server.watchdog import BackendSupervisor
 from slm_server.watchdog import load_settings as load_watchdog_settings
 
@@ -56,6 +62,9 @@ ALLOWED_MODEL_TYPES = {
 }
 
 ALLOWED_CONFIG_NAMES = {"flux-schnell", "flux-kontext-dev"}
+
+# Reasoning parsers `mtplx serve --reasoning-parser` accepts (mtplx 2.11.2).
+ALLOWED_MTPLX_REASONING_PARSERS = {"qwen3", "step3p5", "gemma4", "poolside_v1", "none"}
 
 
 def validate_path(path: Path | str, allow_hf_model: bool = False) -> Path | str:
@@ -490,6 +499,94 @@ def find_native_llama_server() -> str | None:
     return shutil.which("llama-server")
 
 
+def find_mtplx_binary() -> str | None:
+    """Return the `mtplx` CLI path, or None if there is none.
+
+    Order: SLM_MTPLX_BIN, then `mtplx` on PATH, then ~/.mtplx/bin/mtplx (where the MTPLX
+    app installs its wrapper). The wrapper execs the runtime's Python, so the launched PID
+    is the server's PID and the watchdog can stop it directly.
+    """
+    override = os.environ.get("SLM_MTPLX_BIN")
+    if override:
+        candidate = Path(override).expanduser()
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+        log.warning(
+            "mtplx_binary_override_unusable",
+            path=override,
+            message="SLM_MTPLX_BIN is not an executable file; falling back to PATH",
+        )
+    on_path = shutil.which("mtplx")
+    if on_path:
+        return on_path
+    default = Path.home() / ".mtplx" / "bin" / "mtplx"
+    if default.is_file() and os.access(default, os.X_OK):
+        return str(default)
+    return None
+
+
+def build_mtplx_command(model_def: ModelDefinition, mtplx_bin: str) -> list[str]:
+    """Build the `mtplx serve` command for a backend: mtplx entry.
+
+    Always binds 127.0.0.1 with --no-auth: the router is the only client, and a non-localhost
+    bind would require an API key. preserve_thinking defaults to off, because MTPLX's own
+    default (auto) resolved to on and kept earlier reasoning where llama.cpp strips it.
+    Never sets MTPLX_SSE_HEARTBEAT=0: the pre-first-token keep-alives stop a long cold prefill
+    from looking like a stall.
+
+    Raises:
+        ValueError: If the entry fails mtplx_config_errors or a CLI value is unsafe.
+    """
+    errors = mtplx_config_errors(model_def)
+    if errors:
+        raise ValueError("; ".join(errors))
+    if not (1024 <= model_def.port <= 65535):
+        raise ValueError(f"Invalid port: {model_def.port}. Must be between 1024 and 65535")
+    pack = cast(Path, validate_path(cast(str, model_def.model_path), allow_hf_model=False))
+    served_id = cast(str, validate_served_model_name(model_def.id))
+    cmd = [
+        mtplx_bin,
+        "serve",
+        "--model",
+        str(pack),
+        "--model-id",
+        served_id,
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(model_def.port),
+        "--no-auth",
+        "--depth",
+        str(model_def.mtp_depth),
+        "--preserve-thinking",
+        model_def.preserve_thinking or "off",
+    ]
+    if model_def.context_length is not None:
+        cmd.extend(["--context-window", str(model_def.context_length)])
+    if model_def.reasoning_effort is not None:
+        cmd.extend(["--reasoning-effort", model_def.reasoning_effort])
+    parser = validate_parser_name(
+        model_def.reasoning_parser, ALLOWED_MTPLX_REASONING_PARSERS, "reasoning_parser"
+    )
+    if parser is not None:
+        cmd.extend(["--reasoning-parser", parser])
+    if model_def.mtplx_profile is not None:
+        cmd.extend(["--profile", model_def.mtplx_profile])
+    if model_def.mtplx_batching_preset is not None:
+        cmd.extend(["--batching-preset", model_def.mtplx_batching_preset])
+    if model_def.mtplx_fan_mode is not None:
+        cmd.extend(["--fan-mode", model_def.mtplx_fan_mode])
+    if model_def.temp is not None:
+        cmd.extend(["--default-temperature", str(model_def.temp)])
+    if model_def.top_p is not None:
+        cmd.extend(["--default-top-p", str(model_def.top_p)])
+    if model_def.top_k is not None:
+        cmd.extend(["--default-top-k", str(model_def.top_k)])
+    if model_def.presence_penalty is not None:
+        cmd.extend(["--default-presence-penalty", str(model_def.presence_penalty)])
+    return cmd
+
+
 def build_llama_native_command(
     model_path: Path,
     port: int,
@@ -855,6 +952,16 @@ def start_model_server(model_def, config: ModelConfig) -> subprocess.Popen | Non
                 served_model_name=model_def.id,
                 context_length=model_def.context_length,
             )
+        elif model_def.backend == "mtplx":
+            mtplx_bin = find_mtplx_binary()
+            if mtplx_bin is None:
+                log.error(
+                    "mtplx_binary_not_found",
+                    model_id=model_def.id,
+                    searched=["SLM_MTPLX_BIN", "PATH:mtplx", "~/.mtplx/bin/mtplx"],
+                )
+                return None
+            cmd = build_mtplx_command(model_def, mtplx_bin)
         elif model_def.backend == "llamacpp":
             # llama.cpp doesn't support Hugging Face model IDs - must be local path
             if is_hf_model:
@@ -1088,6 +1195,15 @@ def main() -> None:
         config = load_model_config()
     except Exception as e:
         log.error("failed_to_load_config", error=str(e))
+        sys.exit(1)
+
+    # Refuse before anything loads: two heavy engines in one Mac corrupt each other's decode
+    # speed, and a start that swaps under pressure is worse than a clear refusal.
+    budget = check_memory_budget(config)
+    for warning in budget.warnings:
+        log.warning("memory_budget_warning", detail=warning)
+    if budget.errors:
+        log.error("memory_budget_exceeded", errors=budget.errors)
         sys.exit(1)
 
     # Watchdog: nothing here used to restart a backend under any circumstance

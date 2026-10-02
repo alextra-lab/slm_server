@@ -126,6 +126,26 @@ models:
     default_timeout: 120
     model_path: "/path/to/Qwen3-Reranker-4B-mxfp8"  # local dir of MLX safetensors (HF model IDs not accepted for mlx-rerank)
 
+  # MTPLX backend (Apple Silicon, MLX, native MTP). Tune first:
+  #   mtplx tune --model /path/to/models/Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed --retune
+  # then copy the best depth into mtp_depth.
+  mtplx_27b_example:
+    id: "mtplx-qwen38-27b-optimized-speed"
+    backend: "mtplx"
+    port: 8600
+    model_type: "lm"
+    context_length: 131072
+    quantization: "4bit"
+    max_concurrency: 1
+    default_timeout: 600
+    reasoning_parser: "qwen3"
+    reasoning_effort: "medium"
+    preserve_thinking: "off"
+    mtp_depth: 3
+    peak_memory_gib: 24
+    model_path: "/path/to/models/Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed"
+    enabled: false
+
   # --- Additional MLX model example (disabled by default) ---
   # coding:
   #   id: "mistralai/devstral-small-2-2512"

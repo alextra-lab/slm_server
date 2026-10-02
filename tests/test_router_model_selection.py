@@ -66,7 +66,8 @@ def test_get_model_definition_returns_disabled_message_when_only_disabled() -> N
     with pytest.raises(HTTPException) as exc:
         _get_model_definition("unsloth/qwen3.6-35-A3B", cfg)
 
-    assert exc.value.status_code == 503
+    assert exc.value.status_code == 404
+    assert "currently disabled" in str(exc.value.detail)
 
 
 def _client_with(monkeypatch: pytest.MonkeyPatch, cfg: ModelConfig) -> TestClient:

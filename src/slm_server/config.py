@@ -1,5 +1,8 @@
 """Configuration management for SLM Server."""
 
+import json
+import os
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
@@ -10,7 +13,9 @@ class ModelDefinition(BaseModel):
     """Configuration for a single model server instance."""
 
     id: str = Field(..., description="Model identifier (used for routing)")
-    backend: Literal["mlx", "llamacpp", "mlx-rerank"] = Field(..., description="Backend type")
+    backend: Literal["mlx", "llamacpp", "mlx-rerank", "mtplx"] = Field(
+        ..., description="Backend type"
+    )
     port: int = Field(..., ge=1024, le=65535, description="Port number for this model server")
     context_length: int | None = Field(
         None,
@@ -37,7 +42,7 @@ class ModelDefinition(BaseModel):
     )
     reasoning_parser: str | None = Field(
         None,
-        description="Reasoning parser for mlx-openai-server. Available options: qwen3, glm4_moe, qwen3_moe, qwen3_next, qwen3_vl, harmony, minimax_m2. Only works with language models (lm or multimodal model types).",
+        description="Reasoning parser. For mlx-openai-server: qwen3, glm4_moe, qwen3_moe, qwen3_next, qwen3_vl, harmony, minimax_m2 (language models only). For mtplx (--reasoning-parser): qwen3, step3p5, gemma4, poolside_v1, none.",
     )
     config_name: str | None = Field(
         None,
@@ -50,7 +55,7 @@ class ModelDefinition(BaseModel):
     # See https://unsloth.ai/docs/models/qwen3.5#how-to-enable-or-disable-reasoning-and-thinking
     chat_template_kwargs: dict | None = Field(
         None,
-        description="Optional chat template kwargs for llama.cpp (e.g. enable_thinking for Qwen3.5). Only used when backend is llamacpp.",
+        description="Optional chat template kwargs (e.g. enable_thinking for Qwen3.5). Used when backend is llamacpp or mtplx (the router merges config and request chat_template_kwargs for mtplx entries).",
     )
     chat_template_file: str | None = Field(
         None,
@@ -58,19 +63,27 @@ class ModelDefinition(BaseModel):
     )
     # Optional llamacpp-only CLI options; only applied when present (no defaults in code).
     temp: float | None = Field(
-        None, description="Sampling temperature (llamacpp). Only used when backend is llamacpp."
+        None,
+        description="Sampling temperature. Used when backend is llamacpp or mtplx (passed as "
+        "--default-temperature for mtplx).",
     )
     top_p: float | None = Field(
-        None, description="Top-p sampling (llamacpp). Only used when backend is llamacpp."
+        None,
+        description="Top-p sampling. Used when backend is llamacpp or mtplx (passed as "
+        "--default-top-p for mtplx).",
     )
     top_k: int | None = Field(
-        None, description="Top-k sampling (llamacpp). Only used when backend is llamacpp."
+        None,
+        description="Top-k sampling. Used when backend is llamacpp or mtplx (passed as "
+        "--default-top-k for mtplx).",
     )
     min_p: float | None = Field(
         None, description="Min-p sampling (llamacpp). Only used when backend is llamacpp."
     )
     presence_penalty: float | None = Field(
-        None, description="Presence penalty (llamacpp). Only used when backend is llamacpp."
+        None,
+        description="Presence penalty. Used when backend is llamacpp or mtplx (passed as "
+        "--default-presence-penalty for mtplx).",
     )
     repetition_penalty: float | None = Field(
         None,
@@ -146,6 +159,42 @@ class ModelDefinition(BaseModel):
             "Passed to llama-server as --mmproj."
         ),
     )
+    # MTPLX-only fields (backend: mtplx). See docs/superpowers/specs/2026-09-14-mtplx-backend-design.md.
+    mtp_depth: int | None = Field(
+        None,
+        ge=1,
+        le=6,
+        description="MTP draft depth passed to `mtplx serve --depth`. Required for backend mtplx: "
+        "`mtplx serve` ignores saved tuning. Tune with `mtplx tune` and copy the best depth here.",
+    )
+    reasoning_effort: Literal["low", "medium", "high", "xhigh", "auto"] | None = Field(
+        None, description="`mtplx serve --reasoning-effort`. Only used when backend is mtplx."
+    )
+    preserve_thinking: Literal["off", "on", "auto", "scoped"] | None = Field(
+        None,
+        description="`mtplx serve --preserve-thinking`. Defaults to off when unset. Only used when "
+        "backend is mtplx.",
+    )
+    mtplx_profile: (
+        Literal["stable", "performance-cold", "sustained", "turbo", "exact", "max-diagnostic"]
+        | None
+    ) = Field(None, description="`mtplx serve --profile`. Only used when backend is mtplx.")
+    mtplx_batching_preset: Literal["solo", "latency", "agent", "throughput"] | None = Field(
+        None,
+        description="`mtplx serve --batching-preset`. Unset means serial (one request at a time). "
+        "Only used when backend is mtplx.",
+    )
+    mtplx_fan_mode: Literal["default", "smart", "max"] | None = Field(
+        None,
+        description="`mtplx serve --fan-mode`. smart and max need the thermalforge daemon. Only "
+        "used when backend is mtplx.",
+    )
+    peak_memory_gib: float | None = Field(
+        None,
+        gt=0,
+        description="Declared peak resident memory in GiB, for the launcher's memory budget. "
+        "Applies to every backend.",
+    )
     enabled: bool = Field(True, description="Whether this model server should be started")
 
 
@@ -153,6 +202,185 @@ class ModelConfig(BaseModel):
     """Complete model configuration loaded from YAML."""
 
     models: dict[str, ModelDefinition]
+
+
+MTPLX_DEPTH_CEILING = 6
+THERMALFORGE_SOCKET = Path("/tmp/thermalforge.sock")
+
+_MTPLX_ONLY_FIELDS = (
+    "mtp_depth",
+    "reasoning_effort",
+    "preserve_thinking",
+    "mtplx_profile",
+    "mtplx_batching_preset",
+    "mtplx_fan_mode",
+)
+
+_LLAMACPP_ONLY_FIELDS = (
+    "min_p",
+    "repetition_penalty",
+    "n_predict",
+    "ubatch_size",
+    "kv_unified",
+    "cache_type_k",
+    "cache_type_v",
+    "cache_ram",
+    "kv_offload",
+    "flash_attn",
+    "fit",
+    "cont_batching",
+    "cache_prompt",
+    "spec_type",
+    "spec_draft_n_max",
+    "spec_model_path",
+    "verbose",
+    "chat_template_file",
+    "mmproj_path",
+)
+
+_MTPLX_CONFIG_KWARG_KEYS_FORBIDDEN = ("reasoning_effort", "preserve_thinking")
+
+
+def read_mtp_depth_max(pack_dir: Path) -> int:
+    """Read the pack's declared maximum MTP depth.
+
+    Args:
+        pack_dir: MTPLX pack directory.
+
+    Returns:
+        `mtp_depth_max` from `mtplx_runtime.json`, or `MTPLX_DEPTH_CEILING` when the file or
+        the key is missing or invalid.
+    """
+    try:
+        data = json.loads((pack_dir / "mtplx_runtime.json").read_text())
+    except (OSError, ValueError):
+        return MTPLX_DEPTH_CEILING
+    value = data.get("mtp_depth_max") if isinstance(data, dict) else None
+    if isinstance(value, int) and 1 <= value <= MTPLX_DEPTH_CEILING:
+        return value
+    return MTPLX_DEPTH_CEILING
+
+
+def mtplx_config_errors(model_def: ModelDefinition) -> list[str]:
+    """Hard errors for a backend: mtplx entry. The builder refuses to start on any of these."""
+    errors: list[str] = []
+    path_str = model_def.model_path or ""
+    if not path_str or not path_str.startswith("/"):
+        errors.append(
+            "backend mtplx requires model_path to be a local directory (absolute path), "
+            f"got: {path_str!r}"
+        )
+    else:
+        pack = Path(path_str)
+        if not pack.is_dir():
+            errors.append(f"backend mtplx model_path is not a directory: {pack}")
+        else:
+            for required in ("config.json", "mtplx_runtime.json"):
+                if not (pack / required).is_file():
+                    errors.append(f"backend mtplx pack is missing {required}: {pack}")
+            if model_def.mtp_depth is not None:
+                depth_max = read_mtp_depth_max(pack)
+                if model_def.mtp_depth > depth_max:
+                    errors.append(
+                        f"mtp_depth {model_def.mtp_depth} exceeds the pack's mtp_depth_max "
+                        f"{depth_max}"
+                    )
+    if model_def.mtp_depth is None:
+        errors.append("backend mtplx requires mtp_depth (mtplx serve ignores saved tuning)")
+    for key in _MTPLX_CONFIG_KWARG_KEYS_FORBIDDEN:
+        if model_def.chat_template_kwargs and key in model_def.chat_template_kwargs:
+            errors.append(
+                f"backend mtplx: set {key} as a top-level field, not inside chat_template_kwargs"
+            )
+    return errors
+
+
+def mtplx_config_warnings(model_def: ModelDefinition) -> list[str]:
+    """Warnings for a backend: mtplx entry. The server still starts."""
+    warnings: list[str] = []
+    for field_name in _LLAMACPP_ONLY_FIELDS:
+        if getattr(model_def, field_name) is not None:
+            warnings.append(f"backend mtplx ignores {field_name}; remove for clarity")
+    if model_def.max_concurrency > 1 and model_def.mtplx_batching_preset in (
+        None,
+        "solo",
+        "latency",
+    ):
+        warnings.append(
+            f"max_concurrency {model_def.max_concurrency} with a serial MTPLX scheduler: "
+            "requests queue one at a time; set mtplx_batching_preset to agent or throughput"
+        )
+    if model_def.host not in ("0.0.0.0", "127.0.0.1"):
+        warnings.append(
+            f"host {model_def.host} is ignored: mtplx binds 127.0.0.1 (non-localhost binds need "
+            "an API key)"
+        )
+    if model_def.mtplx_fan_mode in ("smart", "max") and not THERMALFORGE_SOCKET.exists():
+        warnings.append(
+            f"mtplx_fan_mode {model_def.mtplx_fan_mode} set but the thermalforge daemon socket "
+            f"{THERMALFORGE_SOCKET} is missing; fans stay on Apple automatic control"
+        )
+    return warnings
+
+
+DEFAULT_MEMORY_BUDGET_GIB = 100.0
+HEAVY_MODEL_TYPES = ("lm", "multimodal")
+
+
+@dataclass
+class MemoryBudgetResult:
+    """Outcome of the launcher's memory check. Any error blocks startup."""
+
+    errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+
+def check_memory_budget(config: ModelConfig, budget_gib: float | None = None) -> MemoryBudgetResult:
+    """Refuse configs that would load more model memory than the Mac can hold.
+
+    One heavy engine at a time is the intended mode: memory pressure and heat change decode
+    speed, and callers share one concurrency pool across every local model.
+
+    Args:
+        config: Loaded model configuration.
+        budget_gib: Budget in GiB. None reads SLM_MEMORY_BUDGET_GIB, default 100.
+
+    Returns:
+        Errors (startup must stop) and warnings (startup continues).
+    """
+    result = MemoryBudgetResult()
+    if budget_gib is None:
+        raw = os.environ.get("SLM_MEMORY_BUDGET_GIB")
+        budget_gib = DEFAULT_MEMORY_BUDGET_GIB
+        if raw is not None:
+            try:
+                budget_gib = float(raw)
+            except ValueError:
+                result.warnings.append(
+                    f"SLM_MEMORY_BUDGET_GIB={raw!r} is not a number; using "
+                    f"{DEFAULT_MEMORY_BUDGET_GIB}"
+                )
+    enabled = [(role, m) for role, m in config.models.items() if m.enabled]
+    heavy = [(role, m) for role, m in enabled if m.model_type in HEAVY_MODEL_TYPES]
+    missing = [role for role, m in heavy if m.peak_memory_gib is None]
+    if len(heavy) >= 2 and missing:
+        result.errors.append(
+            f"{len(heavy)} heavy entries are enabled and these lack peak_memory_gib: "
+            f"{', '.join(missing)}; declare it on every heavy entry or enable only one"
+        )
+    elif missing:
+        result.warnings.append(
+            f"{missing[0]} has no peak_memory_gib; the memory budget cannot check it"
+        )
+    declared = [(role, m.peak_memory_gib) for role, m in enabled if m.peak_memory_gib is not None]
+    total = sum(peak for _role, peak in declared)
+    if total > budget_gib:
+        detail = ", ".join(f"{role}={peak}" for role, peak in declared)
+        result.errors.append(
+            f"declared peak memory {total:.1f} GiB exceeds the budget {budget_gib:.1f} GiB "
+            f"({detail})"
+        )
+    return result
 
 
 def _non_lm_model_config_warnings(role: str, model_def: ModelDefinition) -> list[str]:
@@ -191,9 +419,20 @@ def validate_model_config(config: ModelConfig) -> list[str]:
     Returns:
         List of validation issues (warnings and errors). Empty list means valid.
     """
-    issues = []
+    issues: list[str] = []
 
     for role, model_def in config.models.items():
+        if model_def.backend == "mtplx":
+            issues.extend(f"{role}: {e}" for e in mtplx_config_errors(model_def))
+            issues.extend(f"{role}: {w}" for w in mtplx_config_warnings(model_def))
+        else:
+            for field_name in _MTPLX_ONLY_FIELDS:
+                if getattr(model_def, field_name) is not None:
+                    issues.append(
+                        f"{role}: {field_name} only applies to backend mtplx; ignored for "
+                        f"{model_def.backend}"
+                    )
+
         if model_def.model_type == "rerank" and model_def.backend not in ("llamacpp", "mlx-rerank"):
             issues.append(
                 f"{role}: model_type rerank is only supported with backend llamacpp "

@@ -85,6 +85,11 @@ def test_a_backend_with_a_missing_draft_does_not_stop_the_next_one(
         "quantization": "Q4_K_M",
         "default_timeout": 60,
         "model_path": str(gguf),
+        # Both entries are model_type "lm" (heavy); the memory budget guard errors
+        # when 2+ heavy entries are enabled and any lacks peak_memory_gib. Declared
+        # here only so that unrelated guard does not block this test's actual
+        # subject (a missing spec_model_path not stopping the next backend).
+        "peak_memory_gib": 1.0,
     }
     bad = ModelDefinition(
         id="test/bad-draft",

@@ -32,6 +32,13 @@ def test_a_log_under_the_cap_is_untouched(tmp_path: Path) -> None:
     assert path.stat().st_size == 50
 
 
+def test_an_oversized_mtplx_backend_log_is_kept_as_prev_and_truncated(tmp_path: Path) -> None:
+    path = _log(tmp_path, "mtplx-mtplx-qwen38-27b-8600.log", 200)
+    assert wd.trim_backend_logs(tmp_path, 100) == [path]
+    assert path.stat().st_size == 0
+    assert (tmp_path / (path.name + ".prev")).read_bytes() == b"x" * 200
+
+
 @pytest.mark.parametrize("name", ["start.out", "watchdog.jsonl", "router.log", "notes.log"])
 def test_files_that_are_not_backend_logs_are_never_trimmed(tmp_path: Path, name: str) -> None:
     path = _log(tmp_path, name, 200)
