@@ -76,6 +76,7 @@ constraint-dependencies = [
     "transformers>=5.10.0",  # GHSA-xrqw-3rrv-vx5w save_pretrained path traversal via chat template names (transitive via mlx-lm)
     "torch>=2.13.0",     # GHSA-rrmf-rvhw-rf47 torch.jit.script memory corruption (transitive via mlx stack)
     "setuptools>=83.0.0",  # GHSA-h35f-9h28-mq5c sdist MANIFEST.in exclusion bypass on APFS (transitive via torch)
+    "urllib3>=2.8.0",    # GHSA-8988-9cw3-xx77 proxy TLS config ignored, GHSA-vxq7-64xx-v4gw unbounded chunk-size line, GHSA-gh4c-6fx4-qh6g deflate loop (transitive via requests / mlx stack)
     # fastapi / starlette / python-multipart patched floors are forced via override-dependencies above
     # (mlx-openai-server's fastapi<0.130 cap is conservative; the mlx backend still imports and builds
     # its FastAPI app under the forced stack). Drop the overrides once mlx-openai-server raises its bound.
