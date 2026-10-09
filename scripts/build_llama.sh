@@ -3,9 +3,11 @@
 #
 # Why this exists (2026-09-03): Homebrew's llama.cpp v0.3.0 (build 10621) predates
 # the qwen4exp architecture merge, so it cannot load Qwen3.8-Flash-Next at all --
-# it fails with "unknown model architecture: 'qwen4exp'". PR #28243 adds the MTP
-# draft-head support that Flash-Next needs for speculative decoding. That PR is open
-# and unmerged upstream, so it is pinned by commit here rather than tracked.
+# it fails with "unknown model architecture: 'qwen4exp'". Since 2026-10-09 the pin is a
+# plain ggml-org/llama.cpp master commit: master gained its own qwen4exp MTP on
+# 2026-10-01 (#29761), and the fork branch this script used to build (PR #28243) was
+# closed unmerged. The pin is still fixed by commit, not tracked, so a rebuild is the
+# binary that was benchmarked.
 #
 # The checkout lives beside this repo, not inside it: the build tree is ~360 MB and
 # has no business in slm_server's history.
@@ -31,23 +33,18 @@ fi
 cd "$SRC"
 if ! git cat-file -e "$PIN^{commit}" 2>/dev/null; then
     echo "==> fetching $PIN"
-    # Draft PR commits are not on any branch; fetch the PR head that carries it.
-    git fetch origin "pull/28243/head:pr28243" --force || git fetch origin
+    git fetch origin master
 fi
 git merge --abort 2>/dev/null || true
 git checkout --detach "$PIN"
 
-# No master merge happens here any more (2026-10-01). Upstream rebased PR #28243 and
-# merged master into it at 2026-09-21, and resolved the src/models/qwen4exp.cpp
-# conflict this script used to patch by hand, the same way: master's { n_embd, hc }
-# norm-gamma shapes plus the matching reshape of layer.nextn.hc_head_norm. The pin is
-# that merge, so the checkout alone is the tested source. Earlier pins needed a fixed
-# MASTER_PIN merged on top; if upstream stalls again, re-add that step rather than
-# moving the pin to a master commit, which has no qwen4exp MTP at all.
+# Master's MTP cannot borrow tensors from the target model, so it needs a self-contained
+# head: mtp-Qwen3.8-Flash-Next-Q8_0.gguf, re-exported by Unsloth on 2026-10-05. The
+# fork-format MTP/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf does not load on this build.
 
 # The point of this script is to rebuild what production runs, so assert it. The tree
 # hash covers every file, so a pin that is not the tested commit stops the build.
-EXPECTED_TREE="1056b367d35e2b030d0b48fe089229880f5dde3a"
+EXPECTED_TREE="636029222fc1ddd057b423a65cdc1155882570b5"
 GOT_TREE="$(git rev-parse HEAD^{tree})"
 if [ "$GOT_TREE" != "$EXPECTED_TREE" ]; then
     echo "checked-out tree does not match the tested build" >&2
