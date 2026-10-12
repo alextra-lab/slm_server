@@ -697,6 +697,23 @@ def test_a_disabled_watchdog_records_and_restarts_nothing(
             }
         },
         "Failed to parse input at pos 42",
+        {
+            "error": {
+                "code": 500,
+                "message": 'Failed to parse tools: Missing tool type: {"function":{"name":"t1"}}; '
+                'tools = [\n  {\n    "function": {\n      "name": "t1"\n    }\n  }\n]',
+                "type": "server_error",
+            }
+        },
+        "Failed to parse messages: Missing 'role' in message: {}",
+        "Cannot specify grammar with tools",
+        "Cannot specify both content and content_parts",
+        "Cannot use both json_schema and grammar",
+        "'messages' is required",
+        '"prompt" is required',
+        "Unsupported param: suffix",
+        "Invalid base64 value",
+        "Multimodal data provided, but model does not support multimodal requests.",
     ],
 )
 def test_request_errors_are_recognised(detail: object) -> None:

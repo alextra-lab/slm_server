@@ -272,6 +272,8 @@ def test_non_streaming_requests_are_not_stall_tracked(client: TestClient) -> Non
         "Failed to parse tool call arguments as JSON: [json.exception.parse_error.101] "
         "parse error at line 1, column 12225",
         "Context size has been exceeded.",
+        # 2026-10-12: a tool without "type" restarted production 16 times.
+        'Failed to parse tools: Missing tool type: {"function":{"name":"t1"}}; tools = []',
     ],
 )
 def test_a_request_level_500_never_trips_a_restart(
@@ -314,17 +316,18 @@ def _stream_chat(client: TestClient) -> httpx.Response:
     )
 
 
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Failed to parse tool call arguments as JSON: parse error at line 1",
+        'Failed to parse tools: Missing tool type: {"function":{"name":"t1"}}; tools = []',
+    ],
+)
 def test_a_request_level_500_on_the_streaming_path_never_trips_a_restart(
-    client: TestClient, watchdog_settings: wd.WatchdogSettings
+    client: TestClient, watchdog_settings: wd.WatchdogSettings, message: str
 ) -> None:
     """stream=True requests take _stream_backend_response, a separate error path."""
-    body = {
-        "error": {
-            "code": 500,
-            "message": "Failed to parse tool call arguments as JSON: parse error at line 1",
-            "type": "server_error",
-        }
-    }
+    body = {"error": {"code": 500, "message": message, "type": "server_error"}}
 
     async def reject(_request: object, **_kwargs: object) -> httpx.Response:
         return httpx.Response(500, json=body)

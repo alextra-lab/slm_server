@@ -91,10 +91,23 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 # to parse (ggml-org/llama.cpp#25510: it should be a 4xx), and a request can outgrow
 # the shared KV pool while other slots hold long contexts. A restart fixes neither and
 # kills every other in-flight request: on 2026-09-13 it caused three restarts overnight.
+# The rest are client-input checks that llama.cpp raises as std::runtime_error, which
+# its server maps to 500 (b42b7e6d3). On 2026-10-12 a test suite's tool without "type"
+# ("Failed to parse tools: Missing tool type") restarted production 16 times.
 REQUEST_ERROR_MARKERS: tuple[str, ...] = (
     "Failed to parse tool call arguments",
     "Failed to parse input",
     "Context size has been exceeded",
+    "Failed to parse tools",  # common/chat.cpp:616
+    "Failed to parse messages",  # common/chat.cpp:468
+    "Cannot specify grammar with tools",  # common/chat.cpp:1327
+    "Cannot specify both content and content_parts",  # common/chat.cpp:78, 189
+    "Cannot use both json_schema and grammar",  # tools/server/server-common.cpp:1299
+    "'messages' is required",  # tools/server/server-chat.cpp:378
+    '"prompt" is required',  # tools/server/server-common.cpp:1084
+    "Unsupported param: ",  # tools/server/server-common.cpp:1103
+    "Invalid base64 value",  # tools/server/server-common.cpp:1188
+    "Multimodal data provided, but model does not support",  # server-common.cpp:1041
 )
 
 
