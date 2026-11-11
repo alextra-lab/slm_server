@@ -44,7 +44,7 @@ git checkout --detach "$PIN"
 
 # The point of this script is to rebuild what production runs, so assert it. The tree
 # hash covers every file, so a pin that is not the tested commit stops the build.
-EXPECTED_TREE="bcb422adcb904e1e08276f5a96d797b35f93b20c"
+EXPECTED_TREE="11573f0822cc8bf05e9f70dfbdec2ebd16fe6a48"
 GOT_TREE="$(git rev-parse HEAD^{tree})"
 if [ "$GOT_TREE" != "$EXPECTED_TREE" ]; then
     echo "checked-out tree does not match the tested build" >&2
